@@ -74,6 +74,24 @@ class AppSettings(context: Context) {
         get() = p.getInt("pip_rot", 0)
         set(v) = p.edit().putInt("pip_rot", v).apply()
 
+    // Capas (textos e imágenes) y escenas de video, guardadas como JSON.
+    var overlaysJson: String
+        get() = p.getString("overlays", "[]") ?: "[]"
+        set(v) = p.edit().putString("overlays", v).apply()
+
+    var scenesJson: String
+        get() = p.getString("scenes", "[]") ?: "[]"
+        set(v) = p.edit().putString("scenes", v).apply()
+
+    /** Dirección (uri) del video que se reproduce como intro al empezar a transmitir. */
+    var introUri: String?
+        get() = p.getString("intro_uri", null)
+        set(v) = p.edit().putString("intro_uri", v).apply()
+
+    var introEnabled: Boolean
+        get() = p.getBoolean("intro_on", false)
+        set(v) = p.edit().putBoolean("intro_on", v).apply()
+
     companion object {
         const val DEFAULT_URL = "rtmps://live-api-s.facebook.com:443/rtmp/"
     }

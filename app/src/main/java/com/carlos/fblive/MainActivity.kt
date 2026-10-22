@@ -3,6 +3,7 @@ package com.carlos.fblive
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -11,6 +12,7 @@ import android.graphics.Typeface
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -40,8 +42,10 @@ import com.google.android.material.button.MaterialButton
 import com.pedro.common.ConnectChecker
 import com.pedro.common.StreamingStatsReport
 import com.pedro.common.Throughput
+import com.pedro.encoder.input.sources.audio.AudioFileSource
 import com.pedro.encoder.input.sources.audio.MicrophoneSource
 import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.sources.video.VideoFileSource
 import com.pedro.encoder.input.video.CameraCallbacks
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.rtmp.RtmpStream
@@ -81,6 +85,15 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     internal val pip by lazy { PipCamera(this) { message -> toast(message); onPipStopped() } }
 
     internal val cam: Camera2Source get() = stream.videoSource as Camera2Source
+    internal val camOrNull: Camera2Source? get() = stream.videoSource as? Camera2Source
+    internal lateinit var overlays: OverlayManager
+    internal var scenes: MutableList<Scene> = mutableListOf()
+
+    /** true mientras se transmite un video pregrabado en lugar de la cámara. */
+    internal var sceneActive = false
+    private var sceneName: String? = null
+    private var pendingIntro = false
+    private var micMutedBeforeScene = false
     internal val isLive: Boolean get() = stream.isStreaming
 
     private lateinit var surfaceView: SurfaceView
@@ -95,6 +108,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private lateinit var btnMic: ImageButton
     private lateinit var btnLive: TextView
     private lateinit var btnTune: ImageButton
+    private lateinit var sceneBar: TextView
     private lateinit var panel: LinearLayout
     private lateinit var panelController: SettingsPanel
 
@@ -115,6 +129,24 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
                 toast("Sin permiso de cámara y micrófono no se puede transmitir")
             }
         }
+
+    private val pickVideo =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) addScene(uri)
+        }
+
+    private val pickImage =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                val item = overlays.addImage(uri)
+                if (item == null) toast("No se pudo abrir esa imagen") else rebuildOverlays()
+                panelController.refresh()
+            }
+        }
+
+    internal fun chooseVideo() = pickVideo.launch(arrayOf("video/*"))
+
+    internal fun chooseImage() = pickImage.launch(arrayOf("image/*"))
 
     private val timerTick = object : Runnable {
         override fun run() {
@@ -157,6 +189,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         bindViews()
 
         lenses = CameraCatalog.scan(this)
+        overlays = OverlayManager(this, settings)
+        scenes = SceneStore.load(settings.scenesJson)
         stream = RtmpStream(this, this)
         stream.getGlInterface().autoHandleOrientation = !settings.vertical
         stream.getStreamClient().setReTries(10)
@@ -167,7 +201,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             listOf(
                 findViewById<MaterialButton>(R.id.tabCamera),
                 findViewById<MaterialButton>(R.id.tabStream),
-                findViewById<MaterialButton>(R.id.tabMulti)
+                findViewById<MaterialButton>(R.id.tabMulti),
+                findViewById<MaterialButton>(R.id.tabCapas)
             )
         )
         setupPanelSize()
@@ -233,6 +268,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         btnMic = findViewById(R.id.btnMic)
         btnLive = findViewById(R.id.btnLive)
         btnTune = findViewById(R.id.btnTune)
+        sceneBar = findViewById(R.id.sceneBar)
+        sceneBar.setOnClickListener { endScene() }
         panel = findViewById(R.id.panel)
         findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
     }
@@ -257,7 +294,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private fun setupGestures() {
         val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
-                if (!stream.isOnPreview) return false
+                if (!stream.isOnPreview || sceneActive) return false
                 val range = cam.getZoomRange()
                 setZoomLevel((camState.zoom * detector.scaleFactor).coerceIn(range.lower, range.upper))
                 return true
@@ -267,7 +304,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 if (panel.visibility == View.VISIBLE) {
                     closePanel()
-                } else if (stream.isOnPreview) {
+                } else if (stream.isOnPreview && !sceneActive) {
                     camState.manualFocus = false
                     runCatching { cam.tapToFocus(surfaceView, e) }
                 }
@@ -350,6 +387,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         refreshLensRow()
         updateMicUi()
         refreshStats(null)
+        rebuildOverlays()
     }
 
     /**
@@ -360,6 +398,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             toast("Detén la transmisión para cambiar esto")
             return
         }
+        if (sceneActive) endScene()
         pip.stop()
         val wasPreview = stream.isOnPreview
         if (wasPreview) stream.stopPreview()
@@ -389,6 +428,10 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     internal fun selectLens(lens: Lens) {
+        if (sceneActive) {
+            toast("Termina la escena de video para cambiar de cámara")
+            return
+        }
         if (!stream.isOnPreview && !stream.isStreaming) return
         val hadPip = pip.isActive
         if (hadPip) pip.stop()
@@ -436,6 +479,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     private fun recoverFromCameraFailure() {
+        if (sceneActive) return
         toast("No se pudo usar esa cámara. Volviendo a la principal.")
         pip.stop()
         pipWanted = false
@@ -494,8 +538,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     internal fun applyCamState() {
-        if (!stream.isOnPreview && !stream.isStreaming) return
-        val c = cam
+        if (sceneActive || (!stream.isOnPreview && !stream.isStreaming)) return
+        val c = camOrNull ?: return
         if (!c.isRunning()) return
         runCatching {
             val range = c.getZoomRange()
@@ -542,7 +586,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     internal fun setStabilization(on: Boolean): Boolean {
-        val c = cam
+        val c = camOrNull ?: return false
         return if (on) {
             val ok = runCatching { c.enableOpticalVideoStabilization() || c.enableVideoStabilization() }
                 .getOrDefault(false)
@@ -606,7 +650,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     internal fun startPip(): Boolean {
-        if (!stream.isOnPreview && !stream.isStreaming) return false
+        if (sceneActive || (!stream.isOnPreview && !stream.isStreaming)) return false
         val candidates = pipCandidates()
         if (candidates.isEmpty()) {
             pipWanted = false
@@ -662,6 +706,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             return
         }
         closePanel()
+        pendingIntro = settings.introEnabled && introScene() != null
         setStatus(Status.CONNECTING)
         liveStartMs = SystemClock.elapsedRealtime()
         try {
@@ -676,6 +721,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     private fun stopLive() {
+        pendingIntro = false
         if (stream.isStreaming) stream.stopStream()
         ui.removeCallbacks(timerTick)
         timerText.text = "00:00:00"
@@ -706,7 +752,12 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         } else {
             settings.bitrateKbps / 1000f
         }
-        statsText.text = String.format(Locale.US, "%s · %.1f Mbps", base, mbps)
+        statsText.text = if (report != null && report.throughput != Throughput.UNKNOWN) {
+            val mb = report.totalBytesOut / 1_048_576f
+            String.format(Locale.US, "%s · %.1f Mbps · %.1f MB enviados", base, mbps, mb)
+        } else {
+            String.format(Locale.US, "%s · %.1f Mbps", base, mbps)
+        }
         val weak = report?.throughput == Throughput.INSUFFICIENT
         statsText.setTextColor(if (weak) ContextCompat.getColor(this, R.color.warn) else Color.WHITE)
     }
@@ -721,6 +772,131 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         val muted = (stream.audioSource as? MicrophoneSource)?.isMuted() ?: false
         btnMic.setImageResource(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
         btnMic.setBackgroundResource(if (muted) R.drawable.bg_round_alert else R.drawable.bg_round)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Capas (textos e imágenes) y escenas de video
+    // ---------------------------------------------------------------------------------------------
+
+    /** Vuelve a dibujar los textos e imágenes sobre el video. */
+    internal fun rebuildOverlays() {
+        if (!stream.isOnPreview && !stream.isStreaming) return
+        val (w, h) = streamSize()
+        runCatching { overlays.attach(stream, w, h) }
+            .onFailure { Log.e(TAG, "overlays", it) }
+    }
+
+    internal fun saveAndRebuildOverlays() {
+        overlays.save()
+        overlays.scheduleRebuild { rebuildOverlays() }
+    }
+
+    private fun addScene(uri: Uri) {
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val scene = Scene(SceneStore.displayName(this, uri), uri.toString())
+        if (scenes.none { it.uri == scene.uri }) scenes.add(scene)
+        settings.scenesJson = SceneStore.toJson(scenes)
+        panelController.refresh()
+    }
+
+    internal fun removeScene(scene: Scene) {
+        scenes.remove(scene)
+        if (settings.introUri == scene.uri) {
+            settings.introUri = null
+            settings.introEnabled = false
+        }
+        settings.scenesJson = SceneStore.toJson(scenes)
+        runCatching {
+            contentResolver.releasePersistableUriPermission(Uri.parse(scene.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    internal fun introScene(): Scene? = scenes.firstOrNull { it.uri == settings.introUri }
+
+    /** Transmite el video elegido en lugar de la cámara. Al terminar vuelve la cámara sola. */
+    internal fun playScene(scene: Scene) {
+        if (!stream.isOnPreview && !stream.isStreaming) {
+            toast("La cámara aún no está lista")
+            return
+        }
+        if (sceneActive) endScene()
+        pip.stop()
+        val uri = Uri.parse(scene.uri)
+        val mic = stream.audioSource as? MicrophoneSource
+        micMutedBeforeScene = mic?.isMuted() ?: false
+        try {
+            val video = VideoFileSource(this, uri, false) { isLoop ->
+                if (!isLoop) runOnUiThread { endScene() }
+            }
+            stream.changeVideoSource(video)
+        } catch (e: Exception) {
+            Log.e(TAG, "playScene", e)
+            toast("No se pudo abrir ese video: ${e.message}")
+            return
+        }
+        sceneActive = true
+        sceneName = scene.name
+        physicalActive = false
+        try {
+            stream.changeAudioSource(AudioFileSource(this, uri, false))
+        } catch (e: Exception) {
+            Log.w(TAG, "scene audio", e)
+            toast("El sonido del video no coincide con la transmisión (se necesita 44.1 kHz estéreo): se verá sin su sonido")
+        }
+        updateSceneUi()
+        panelController.refresh()
+    }
+
+    /** Termina la escena de video y vuelve a la cámara y al micrófono. */
+    internal fun endScene() {
+        if (!sceneActive) return
+        sceneActive = false
+        sceneName = null
+        try {
+            stream.changeVideoSource(Camera2Source(this))
+            stream.getGlInterface().autoHandleOrientation = !settings.vertical
+            runCatching { cam.setCameraCallback(cameraCallbacks) }
+        } catch (e: Exception) {
+            Log.e(TAG, "endScene video", e)
+            toast("No se pudo volver a la cámara: ${e.message}")
+        }
+        if (stream.audioSource !is MicrophoneSource) {
+            try {
+                stream.changeAudioSource(MicrophoneSource())
+                (stream.audioSource as? MicrophoneSource)?.let {
+                    if (micMutedBeforeScene) it.mute()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "endScene audio", e)
+                toast("No se pudo volver al micrófono: ${e.message}")
+            }
+        }
+        updateSceneUi()
+        updateMicUi()
+        val lens = currentLens
+        ui.postDelayed({
+            if (!sceneActive && lens != null) selectLens(lens) else scheduleReapply()
+            panelController.refresh()
+        }, 300)
+    }
+
+    private fun updateSceneUi() {
+        sceneBar.visibility = if (sceneActive) View.VISIBLE else View.GONE
+        sceneBar.text = "ESCENA: ${sceneName ?: "video"} · toca para volver a la cámara"
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Verificación de la transmisión
+    // ---------------------------------------------------------------------------------------------
+
+    internal fun openLiveProducer() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.facebook.com/live/producer")))
+        } catch (e: Exception) {
+            toast("No se pudo abrir Facebook")
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -755,7 +931,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     override fun onConnectionSuccess() {
-        runOnUiThread { setStatus(Status.LIVE) }
+        runOnUiThread {
+            setStatus(Status.LIVE)
+            if (pendingIntro) {
+                pendingIntro = false
+                introScene()?.let { playScene(it) }
+            }
+        }
     }
 
     override fun onConnectionFailed(reason: String) {

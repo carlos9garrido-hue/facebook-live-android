@@ -107,6 +107,22 @@
         android:paddingEnd="12dp"
         android:paddingBottom="14dp">
 
+        <TextView
+            android:id="@+id/sceneBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_pill_live"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -240,8 +256,17 @@
                 style="@style/TabButton"
                 android:layout_width="0dp"
                 android:layout_height="40dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:text="Multicámara" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tabCapas"
+                style="@style/TabButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Capas" />
         </LinearLayout>
 
         <ScrollView

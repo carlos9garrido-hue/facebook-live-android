@@ -1,13 +1,19 @@
 package com.carlos.fblive
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraMetadata
 import android.os.Build
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -28,6 +34,10 @@ class SettingsPanel(
 ) {
 
     private var tab = 0
+    private var diagVisible = false
+
+    /** Dónde se agregan las piezas de interfaz (el cuerpo del panel o una tarjeta). */
+    private var target: LinearLayout = body
     private val dim = ContextCompat.getColor(a, R.color.text_dim)
     private val accent = ContextCompat.getColor(a, R.color.accent)
 
@@ -44,11 +54,13 @@ class SettingsPanel(
         tab = index
         styleTabs()
         body.removeAllViews()
+        target = body
         try {
             when (index) {
                 0 -> cameraTab()
                 1 -> streamTab()
-                else -> multiTab()
+                2 -> multiTab()
+                else -> capasTab()
             }
         } catch (e: Exception) {
             note("No se pudo mostrar esta sección: ${e.message}")
@@ -75,6 +87,11 @@ class SettingsPanel(
             note("La cámara no está activa todavía.")
             return
         }
+        if (a.sceneActive || a.camOrNull == null) {
+            note("Hay una escena de video en curso: los ajustes de cámara vuelven cuando termine.")
+            button("Volver a la cámara ahora") { a.endScene() }
+            return
+        }
         val lens = a.currentLens
         note(
             if (lens != null) "Lente activo: ${lens.longName} (${lens.ratioText})"
@@ -89,6 +106,16 @@ class SettingsPanel(
             { String.format(Locale.US, "%.1f×", it) },
             { a.setZoomLevel(it) }
         )
+        val presets = listOf(0.5f, 0.6f, 1f, 2f, 3f, 5f, 10f)
+            .filter { it >= zoomRange.lower - 0.01f && it <= zoomRange.upper + 0.01f }
+        if (presets.size > 1) {
+            label("Zoom rápido")
+            val selectedPreset = presets.indexOfFirst { kotlin.math.abs(it - a.camState.zoom) < 0.05f }
+            chips(presets.map { String.format(Locale.US, "%s×", if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString()) }, selectedPreset) { i ->
+                a.setZoomLevel(presets[i])
+                show(tab)
+            }
+        }
 
         val chars = a.currentChars()
         val evRange = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
@@ -147,6 +174,33 @@ class SettingsPanel(
             if (!a.setTorch(on)) body.post { show(tab) }
         }
         toggle("Cuadrícula de encuadre", a.settings.grid) { a.setGrid(it) }
+
+        section("Lentes de este teléfono")
+        val shown = a.lenses.count { it.front == a.settings.front }
+        note(
+            "Lentes encontrados en la cámara ${if (a.settings.front) "frontal" else "trasera"}: $shown. " +
+                "Muchos fabricantes solo dejan usar un lente a las apps; el informe muestra qué ve Android."
+        )
+        button(if (diagVisible) "Ocultar informe de cámaras" else "Ver informe de cámaras") {
+            diagVisible = !diagVisible
+            show(tab)
+        }
+        if (diagVisible) {
+            val report = CameraCatalog.diagnostics(a, a.lenses)
+            target.addView(TextView(a).apply {
+                text = report
+                setTextColor(Color.WHITE)
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+                setPadding(0, a.dp(8), 0, 0)
+            })
+            button("Copiar informe") {
+                val cm = a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("Cámaras", report))
+                a.toast("Informe copiado")
+            }
+        }
     }
 
     private fun streamTab() {
@@ -157,6 +211,13 @@ class SettingsPanel(
         label("Clave de transmisión")
         field("Pega aquí tu clave", a.streamKey, true) { a.streamKey = it }
         note("La clave no se guarda en el teléfono: hay que pegarla en cada sesión.")
+
+        section("Comprobar que sí transmite")
+        note(
+            "Cuando la insignia diga EN VIVO, Facebook aceptó la conexión, y los MB enviados de arriba deben ir subiendo. " +
+                "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
+        )
+        button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
 
         section("Video")
         if (a.isLive) {
@@ -211,6 +272,10 @@ class SettingsPanel(
             note("La cámara no está activa todavía.")
             return
         }
+        if (a.sceneActive || a.camOrNull == null) {
+            note("Hay una escena de video en curso: la multicámara vuelve cuando termine.")
+            return
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             note("Esta función necesita Android 11 o superior.")
             return
@@ -262,12 +327,190 @@ class SettingsPanel(
         note("Si la segunda cámara se ve girada o de lado, cambia la rotación.")
     }
 
+    private fun capasTab() {
+        section("Textos e imágenes")
+        note("Se dibujan encima del video de la transmisión: tu nombre, un logo, un mensaje o un aviso.")
+        buttonRow(
+            "+ Texto" to {
+                a.overlays.addText()
+                a.saveAndRebuildOverlays()
+                show(tab)
+            },
+            "+ Imagen" to { a.chooseImage() }
+        )
+        for (item in a.overlays.items.toList()) overlayCard(item)
+
+        section("Escenas de video")
+        note(
+            "Videos pregrabados, por ejemplo una intro. Se transmiten en lugar de la cámara y, al terminar, vuelve la cámara sola. " +
+                "Funcionan mejor en modo horizontal. Para que se escuche en la transmisión, el audio del video debe ser 44.1 kHz estéreo."
+        )
+        if (a.sceneActive) button("Volver a la cámara ahora") { a.endScene() }
+        button("+ Agregar video") { a.chooseVideo() }
+        for (scene in a.scenes.toList()) sceneCard(scene)
+        if (a.scenes.isNotEmpty()) {
+            label("Intro al iniciar la transmisión")
+            val names = listOf("Ninguna") + a.scenes.map { it.name.take(22) }
+            val selected = if (a.settings.introEnabled) {
+                a.scenes.indexOfFirst { it.uri == a.settings.introUri } + 1
+            } else 0
+            chips(names, selected.coerceAtLeast(0)) { i ->
+                if (i == 0) {
+                    a.settings.introEnabled = false
+                    a.settings.introUri = null
+                } else {
+                    a.settings.introUri = a.scenes[i - 1].uri
+                    a.settings.introEnabled = true
+                }
+            }
+            note("La intro empieza apenas Facebook acepta la conexión.")
+        }
+    }
+
+    private fun overlayCard(item: OverlayItem) {
+        val card = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_field)
+            setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(12))
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = a.dp(12)
+        body.addView(card, lp)
+        target = card
+
+        toggle(if (item.isText) "Mostrar texto" else "Mostrar imagen", item.visible) {
+            item.visible = it
+            a.saveAndRebuildOverlays()
+        }
+        if (item.isText) {
+            textField("Escribe el texto", item.text) {
+                item.text = it
+                a.saveAndRebuildOverlays()
+            }
+            label("Color de la letra")
+            colorRow(item)
+            toggle("Letra en negrita", item.bold) {
+                item.bold = it
+                a.saveAndRebuildOverlays()
+            }
+            toggle("Fondo detrás del texto", item.background) {
+                item.background = it
+                a.saveAndRebuildOverlays()
+            }
+        }
+        label("Posición en el video")
+        positionGrid(item.position) {
+            item.position = it
+            a.saveAndRebuildOverlays()
+        }
+        slider(
+            "Tamaño", 5f, 100f, item.sizePercent.toFloat(), 1f,
+            { "${it.roundToInt()}%" },
+            {
+                item.sizePercent = it.roundToInt()
+                a.saveAndRebuildOverlays()
+            }
+        )
+        slider(
+            "Opacidad", 10f, 100f, item.opacity.toFloat(), 5f,
+            { "${it.roundToInt()}%" },
+            {
+                item.opacity = it.roundToInt()
+                a.saveAndRebuildOverlays()
+            }
+        )
+        button("Quitar") {
+            a.overlays.remove(item)
+            a.rebuildOverlays()
+            show(tab)
+        }
+        target = body
+    }
+
+    private fun sceneCard(scene: Scene) {
+        val card = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_field)
+            setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(12))
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = a.dp(10)
+        body.addView(card, lp)
+        target = card
+        note(scene.name)
+        buttonRow(
+            "▶ Reproducir" to { a.playScene(scene) },
+            "Quitar" to {
+                a.removeScene(scene)
+                show(tab)
+            }
+        )
+        target = body
+    }
+
+    private fun colorRow(item: OverlayItem) {
+        val colors = listOf(
+            Color.WHITE, Color.BLACK, 0xFFFFD60A.toInt(), 0xFFFF3B4E.toInt(), 0xFF3D8BFF.toInt(), 0xFF2ECC71.toInt()
+        )
+        val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+        val views = mutableListOf<View>()
+        fun swatch(color: Int, selected: Boolean) = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(a.dp(if (selected) 3 else 1), if (selected) accent else 0x66FFFFFF)
+        }
+        colors.forEachIndexed { index, color ->
+            val v = View(a).apply {
+                background = swatch(color, color == item.color)
+                setOnClickListener {
+                    item.color = color
+                    views.forEachIndexed { j, other -> other.background = swatch(colors[j], j == index) }
+                    a.saveAndRebuildOverlays()
+                }
+            }
+            views += v
+            row.addView(v, LinearLayout.LayoutParams(a.dp(34), a.dp(34)).apply {
+                setMargins(0, a.dp(4), a.dp(10), a.dp(4))
+            })
+        }
+        target.addView(row)
+    }
+
+    private fun positionGrid(selected: Int, onSelect: (Int) -> Unit) {
+        val symbols = listOf("↖", "↑", "↗", "←", "●", "→", "↙", "↓", "↘")
+        val views = mutableListOf<TextView>()
+        for (row in 0..2) {
+            val line = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+            for (col in 0..2) {
+                val i = row * 3 + col
+                val v = TextView(a).apply {
+                    text = symbols[i]
+                    gravity = Gravity.CENTER
+                    textSize = 16f
+                    setTextColor(Color.WHITE)
+                    setBackgroundResource(if (i == selected) R.drawable.bg_chip_on else R.drawable.bg_pill)
+                    setOnClickListener {
+                        views.forEachIndexed { j, other ->
+                            other.setBackgroundResource(if (j == i) R.drawable.bg_chip_on else R.drawable.bg_pill)
+                        }
+                        onSelect(i)
+                    }
+                }
+                views += v
+                line.addView(v, LinearLayout.LayoutParams(0, a.dp(40), 1f).apply {
+                    setMargins(a.dp(3), a.dp(3), a.dp(3), a.dp(3))
+                })
+            }
+            target.addView(line)
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Piezas de interfaz
     // ---------------------------------------------------------------------------------------------
 
     private fun section(text: String) {
-        body.addView(TextView(a).apply {
+        target.addView(TextView(a).apply {
             this.text = text
             setTextColor(Color.WHITE)
             textSize = 14f
@@ -277,7 +520,7 @@ class SettingsPanel(
     }
 
     private fun label(text: String) {
-        body.addView(TextView(a).apply {
+        target.addView(TextView(a).apply {
             this.text = text
             setTextColor(dim)
             textSize = 12f
@@ -286,7 +529,7 @@ class SettingsPanel(
     }
 
     private fun note(text: String) {
-        body.addView(TextView(a).apply {
+        target.addView(TextView(a).apply {
             this.text = text
             setTextColor(dim)
             textSize = 12f
@@ -294,8 +537,49 @@ class SettingsPanel(
         })
     }
 
+    private fun button(text: String, onClick: () -> Unit) {
+        val b = MaterialButton(a).apply {
+            this.text = text
+            isAllCaps = false
+            setOnClickListener { onClick() }
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = a.dp(8)
+        target.addView(b, lp)
+    }
+
+    private fun buttonRow(vararg actions: Pair<String, () -> Unit>) {
+        val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.forEachIndexed { index, (text, onClick) ->
+            val b = MaterialButton(a).apply {
+                this.text = text
+                isAllCaps = false
+                setOnClickListener { onClick() }
+            }
+            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            lp.setMargins(if (index == 0) 0 else a.dp(4), a.dp(8), if (index == actions.size - 1) 0 else a.dp(4), 0)
+            row.addView(b, lp)
+        }
+        target.addView(row)
+    }
+
+    private fun textField(hint: String, value: String, onText: (String) -> Unit) {
+        target.addView(EditText(a).apply {
+            setText(value)
+            this.hint = hint
+            setHintTextColor(dim)
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setBackgroundResource(R.drawable.bg_pill)
+            setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 4
+            doAfterTextChanged { onText(it?.toString().orEmpty()) }
+        })
+    }
+
     private fun field(hint: String, value: String, password: Boolean, onText: (String) -> Unit) {
-        body.addView(EditText(a).apply {
+        target.addView(EditText(a).apply {
             setText(value)
             this.hint = hint
             setHintTextColor(dim)
@@ -351,8 +635,8 @@ class SettingsPanel(
                 }
             })
         }
-        body.addView(label)
-        body.addView(s)
+        target.addView(label)
+        target.addView(s)
     }
 
     private fun chips(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
@@ -379,11 +663,11 @@ class SettingsPanel(
             views += view
             group.addView(view)
         }
-        body.addView(group)
+        target.addView(group)
     }
 
     private fun toggle(text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-        body.addView(SwitchMaterial(a).apply {
+        target.addView(SwitchMaterial(a).apply {
             this.text = text
             isChecked = checked
             setTextColor(Color.WHITE)

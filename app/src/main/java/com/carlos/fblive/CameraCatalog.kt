@@ -63,9 +63,18 @@ data class Lens(
 
 object CameraCatalog {
 
-    private class Raw(val id: String, val parentId: String?, val front: Boolean, val eq: Float)
+    private class Raw(
+        val id: String,
+        val parentId: String?,
+        val front: Boolean,
+        val eq: Float,
+        val hidden: Boolean = false
+    )
 
-    /** Busca todos los lentes de la cámara frontal y trasera, incluidos los lentes físicos ocultos. */
+    /** Hasta qué número se prueban ids de cámara que Android no lista (algunos fabricantes los ocultan). */
+    private const val HIDDEN_PROBE_MAX = 120
+
+    /** Busca todos los lentes de la cámara frontal y trasera, incluidos los lentes físicos y los ocultos. */
     fun scan(context: Context): List<Lens> {
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val ids = try {
@@ -90,11 +99,22 @@ object CameraCatalog {
             }
         }
 
+        // Algunos teléfonos no listan todas sus cámaras, pero responden si se pregunta por su número.
+        val known = raws.map { it.id }.toSet() + ids.toSet()
+        for (n in 0..HIDDEN_PROBE_MAX) {
+            val id = n.toString()
+            if (id in known) continue
+            val ch = characteristics(cm, id) ?: continue
+            val front = isFront(ch) ?: continue
+            if (!usable(ch)) continue
+            raws += Raw(id, null, front, equivalentFocal(ch), hidden = true)
+        }
+
         val result = mutableListOf<Lens>()
         for (front in listOf(false, true)) {
             // Primero las cámaras que se abren directo; los lentes físicos solo si aportan algo nuevo.
             val group = raws.filter { it.front == front }
-                .sortedWith(compareBy({ it.parentId != null }, { it.id.toIntOrNull() ?: 999 }))
+                .sortedWith(compareBy({ it.parentId != null }, { it.hidden }, { it.id.toIntOrNull() ?: 999 }))
             val kept = mutableListOf<Raw>()
             for (r in group) {
                 val duplicate = r.eq > 0f && kept.any { it.eq > 0f && abs(it.eq - r.eq) / it.eq < 0.08f }
@@ -134,6 +154,56 @@ object CameraCatalog {
         } catch (e: Exception) {
             emptySet()
         }
+    }
+
+    /** Informe en texto de todo lo que Android deja ver de las cámaras, para saber qué lentes se pueden usar. */
+    fun diagnostics(context: Context, shown: List<Lens>): String {
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val sb = StringBuilder()
+        sb.append("Teléfono: ${Build.MANUFACTURER} ${Build.MODEL}\n")
+        sb.append("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n\n")
+        val listed = runCatching { cm.cameraIdList.toList() }.getOrDefault(emptyList())
+        sb.append("Cámaras que Android entrega a la app: ${listed.joinToString(", ").ifEmpty { "ninguna" }}\n\n")
+
+        fun describe(id: String, tag: String) {
+            val ch = characteristics(cm, id) ?: return
+            val facing = when (isFront(ch)) {
+                true -> "frontal"
+                false -> "trasera"
+                null -> "otra"
+            }
+            val focal = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+            val eq = equivalentFocal(ch)
+            val zoom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { "zoom ${it.lower}–${it.upper}×" }
+            } else null
+            val physical = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                ch.physicalCameraIds.toList()
+            } else emptyList()
+            sb.append("• Cámara $id ($tag) · $facing")
+            if (focal != null) sb.append(String.format(Locale.US, " · %.1f mm", focal))
+            if (eq > 0f) sb.append(String.format(Locale.US, " (≈%.0f mm)", eq))
+            if (zoom != null) sb.append(" · $zoom")
+            if (physical.isNotEmpty()) sb.append(" · lentes físicos: ${physical.joinToString(",")}")
+            sb.append(if (usable(ch)) " · sirve para video" else " · no sirve para video")
+            sb.append("\n")
+        }
+
+        for (id in listed) describe(id, "lista")
+        for (n in 0..HIDDEN_PROBE_MAX) {
+            val id = n.toString()
+            if (id !in listed) describe(id, "oculta")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val groups = runCatching { cm.concurrentCameraIds.map { it.joinToString("+") } }.getOrDefault(emptyList())
+            sb.append("\nCámaras que se pueden usar a la vez: ${groups.joinToString("  ").ifEmpty { "ninguna" }}\n")
+        }
+        sb.append("\nLentes que muestra la app:\n")
+        if (shown.isEmpty()) sb.append("• ninguno\n")
+        for (lens in shown) {
+            sb.append("• ${if (lens.front) "Frontal" else "Trasera"} ${lens.ratioText} (${lens.longName}) · id ${lens.key}\n")
+        }
+        return sb.toString()
     }
 
     fun characteristics(cm: CameraManager, id: String): CameraCharacteristics? =
