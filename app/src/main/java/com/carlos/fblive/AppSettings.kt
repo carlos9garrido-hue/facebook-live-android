@@ -74,6 +74,28 @@ class AppSettings(context: Context) {
         get() = p.getInt("pip_rot", 0)
         set(v) = p.edit().putInt("pip_rot", v).apply()
 
+    /** Si es true, la clave de transmisión se guarda cifrada en este teléfono. */
+    var rememberKey: Boolean
+        get() = p.getBoolean("remember_key", false)
+        set(v) = p.edit().putBoolean("remember_key", v).apply()
+
+    /** Guarda la clave cifrada. Devuelve false si el teléfono no pudo cifrarla. */
+    fun saveStreamKey(key: String): Boolean {
+        if (key.isEmpty()) {
+            p.edit().remove("key_enc").apply()
+            return true
+        }
+        val encrypted = KeyVault.encrypt(key) ?: return false
+        p.edit().putString("key_enc", encrypted).apply()
+        return true
+    }
+
+    fun loadStreamKey(): String = p.getString("key_enc", null)?.let { KeyVault.decrypt(it) } ?: ""
+
+    fun clearStreamKey() {
+        p.edit().remove("key_enc").apply()
+    }
+
     // Capas (textos e imágenes) y escenas de video, guardadas como JSON.
     var overlaysJson: String
         get() = p.getString("overlays", "[]") ?: "[]"

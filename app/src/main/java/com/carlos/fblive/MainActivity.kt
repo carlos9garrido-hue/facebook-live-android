@@ -204,6 +204,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         settings = AppSettings(this)
+        if (settings.rememberKey) streamKey = settings.loadStreamKey()
         requestedOrientation = if (settings.vertical) {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {

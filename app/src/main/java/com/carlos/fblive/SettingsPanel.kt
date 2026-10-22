@@ -209,8 +209,31 @@ class SettingsPanel(
         label("URL del servidor")
         field("rtmps://…", a.settings.url, false) { a.settings.url = it }
         label("Clave de transmisión")
-        field("Pega aquí tu clave", a.streamKey, true) { a.streamKey = it }
-        note("La clave no se guarda en el teléfono: hay que pegarla en cada sesión.")
+        field("Pega aquí tu clave", a.streamKey, true) {
+            a.streamKey = it
+            if (a.settings.rememberKey) a.settings.saveStreamKey(it)
+        }
+        toggle("Recordar la clave en este teléfono", a.settings.rememberKey) { on ->
+            if (on) {
+                if (a.settings.saveStreamKey(a.streamKey)) {
+                    a.settings.rememberKey = true
+                } else {
+                    a.settings.rememberKey = false
+                    a.toast("Este teléfono no pudo guardar la clave de forma segura")
+                }
+            } else {
+                a.settings.rememberKey = false
+                a.settings.clearStreamKey()
+            }
+            body.post { show(tab) }
+        }
+        note(
+            if (a.settings.rememberKey) {
+                "La clave se guarda cifrada en este teléfono. Apaga esta opción para borrarla."
+            } else {
+                "La clave no se guarda: hay que pegarla en cada sesión. Si usas una clave persistente de Facebook, activa la opción de arriba."
+            }
+        )
 
         section("Comprobar que sí transmite")
         note(
