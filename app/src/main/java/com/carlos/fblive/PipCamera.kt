@@ -15,7 +15,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Size
 import android.view.Surface
-import com.pedro.encoder.input.gl.render.filters.object.SurfaceFilterRender
+import com.pedro.encoder.input.gl.render.filters.`object`.SurfaceFilterRender
 import com.pedro.encoder.utils.gl.TranslateTo
 import com.pedro.library.base.StreamBase
 import kotlin.math.abs
