@@ -1,6 +1,7 @@
 package com.carlos.fblive
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -23,6 +24,7 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.util.Log
 import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -52,6 +54,7 @@ import com.pedro.library.rtmp.RtmpStream
 import com.pedro.library.util.QueueAwareBitrateAdapter
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.roundToInt
 
 /** Valores de cámara que se vuelven a aplicar cada vez que se abre un lente. */
@@ -94,6 +97,17 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private var sceneName: String? = null
     private var pendingIntro = false
     private var micMutedBeforeScene = false
+
+    // Medidor del micrófono y avisos de transmisión
+    private val micLevel = MicLevel()
+    private val monitor = MicMonitor(micLevel)
+    private var resumed = false
+    private var liveAnim: ValueAnimator? = null
+    private var shownDb = -90f
+    private var zeroSince = 0L
+    private var lowSince = 0L
+    private var noSendSeconds = 0
+    private var sendWarn = false
     internal val isLive: Boolean get() = stream.isStreaming
 
     private lateinit var surfaceView: SurfaceView
@@ -109,6 +123,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private lateinit var btnLive: TextView
     private lateinit var btnTune: ImageButton
     private lateinit var sceneBar: TextView
+    private lateinit var audioMeter: AudioMeterView
+    private lateinit var micStatus: TextView
+    private lateinit var liveBorder: View
     private lateinit var panel: LinearLayout
     private lateinit var panelController: SettingsPanel
 
@@ -125,10 +142,18 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             if (hasPermissions()) {
                 if (prepareStream()) startPreviewIfReady()
+                refreshMonitor()
             } else {
                 toast("Sin permiso de cámara y micrófono no se puede transmitir")
             }
         }
+
+    private val micTick = object : Runnable {
+        override fun run() {
+            updateMicMeter()
+            ui.postDelayed(this, 80)
+        }
+    }
 
     private val pickVideo =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -241,6 +266,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         setStatus(Status.IDLE)
         updateMicUi()
         refreshStats(null)
+        ui.post(micTick)
         if (hasPermissions()) {
             prepareStream()
         } else {
@@ -248,8 +274,22 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        refreshMonitor()
+    }
+
+    override fun onPause() {
+        resumed = false
+        monitor.stop()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
+        liveAnim?.cancel()
+        monitor.stop()
         pip.stop()
         stream.release()
         super.onDestroy()
@@ -269,6 +309,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         btnLive = findViewById(R.id.btnLive)
         btnTune = findViewById(R.id.btnTune)
         sceneBar = findViewById(R.id.sceneBar)
+        audioMeter = findViewById(R.id.audioMeter)
+        micStatus = findViewById(R.id.micStatus)
+        liveBorder = findViewById(R.id.liveBorder)
         sceneBar.setOnClickListener { endScene() }
         panel = findViewById(R.id.panel)
         findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
@@ -351,6 +394,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             toast("Tu teléfono no admite esta configuración. Prueba 720p a 30 fps.")
         } else {
             setupBitrateAdapter()
+            attachMicEffect()
         }
         refreshStats(null)
         return prepared
@@ -709,11 +753,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         pendingIntro = settings.introEnabled && introScene() != null
         setStatus(Status.CONNECTING)
         liveStartMs = SystemClock.elapsedRealtime()
+        monitor.stop() // libera el micrófono para que lo use la transmisión
         try {
             stream.startStream("$base/$key")
         } catch (e: Exception) {
             setStatus(Status.ERROR)
             toast("No se pudo iniciar: ${e.message}")
+            refreshMonitor()
             return
         }
         ui.removeCallbacks(timerTick)
@@ -727,22 +773,66 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         timerText.text = "00:00:00"
         setStatus(Status.IDLE)
         refreshStats(null)
+        refreshMonitor()
     }
 
     private fun setStatus(newStatus: Status) {
+        val becameLive = newStatus == Status.LIVE && status != Status.LIVE
         status = newStatus
-        val (label, dotColor) = when (newStatus) {
+        if (newStatus != Status.LIVE) {
+            sendWarn = false
+            noSendSeconds = 0
+        }
+        renderBadge()
+        val active = newStatus == Status.LIVE || newStatus == Status.CONNECTING
+        btnLive.setBackgroundResource(if (active) R.drawable.bg_live_on else R.drawable.bg_live)
+        btnLive.text = if (active) "STOP" else "LIVE"
+        updateLiveEffects()
+        if (becameLive) btnLive.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+    }
+
+    /** Dibuja la insignia de estado; avisa si dejó de salir video aunque la conexión siga abierta. */
+    private fun renderBadge() {
+        val (label, dotColor) = when (status) {
             Status.IDLE -> "LISTO" to ContextCompat.getColor(this, R.color.idle)
             Status.CONNECTING -> "CONECTANDO" to ContextCompat.getColor(this, R.color.warn)
-            Status.LIVE -> "EN VIVO" to Color.WHITE
+            Status.LIVE -> if (sendWarn) {
+                "SIN ENVÍO" to ContextCompat.getColor(this, R.color.warn)
+            } else {
+                "EN VIVO" to Color.WHITE
+            }
             Status.ERROR -> "ERROR" to ContextCompat.getColor(this, R.color.live)
         }
         badgeText.text = label
         badgeDot.backgroundTintList = ColorStateList.valueOf(dotColor)
-        badge.setBackgroundResource(if (newStatus == Status.LIVE) R.drawable.bg_pill_live else R.drawable.bg_pill)
-        val active = newStatus == Status.LIVE || newStatus == Status.CONNECTING
-        btnLive.setBackgroundResource(if (active) R.drawable.bg_live_on else R.drawable.bg_live)
-        btnLive.text = if (active) "STOP" else "LIVE"
+        val liveOk = status == Status.LIVE && !sendWarn
+        badge.setBackgroundResource(if (liveOk) R.drawable.bg_pill_live else R.drawable.bg_pill)
+    }
+
+    /** Marco de color y punto parpadeante: se nota a simple vista que la transmisión está activa. */
+    private fun updateLiveEffects() {
+        val live = status == Status.LIVE
+        val waiting = status == Status.CONNECTING
+        liveBorder.visibility = if (live || waiting) View.VISIBLE else View.GONE
+        liveBorder.setBackgroundResource(if (live) R.drawable.bg_border_live else R.drawable.bg_border_wait)
+        liveAnim?.cancel()
+        liveAnim = null
+        liveBorder.alpha = 1f
+        badgeDot.alpha = 1f
+        if (live || waiting) {
+            val anim = ValueAnimator.ofFloat(1f, 0.3f).apply {
+                duration = if (live) 800 else 400
+                repeatCount = ValueAnimator.INFINITE
+                repeatMode = ValueAnimator.REVERSE
+                addUpdateListener {
+                    val v = it.animatedValue as Float
+                    badgeDot.alpha = v
+                    liveBorder.alpha = if (live) 0.45f + 0.55f * v else v
+                }
+            }
+            liveAnim = anim
+            anim.start()
+        }
     }
 
     private fun refreshStats(report: StreamingStatsReport?) {
@@ -772,6 +862,79 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         val muted = (stream.audioSource as? MicrophoneSource)?.isMuted() ?: false
         btnMic.setImageResource(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
         btnMic.setBackgroundResource(if (muted) R.drawable.bg_round_alert else R.drawable.bg_round)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Medidor del micrófono
+    // ---------------------------------------------------------------------------------------------
+
+    /** Conecta el medidor al micrófono de la transmisión. */
+    private fun attachMicEffect() {
+        (stream.audioSource as? MicrophoneSource)?.setAudioEffect(MicLevelEffect(micLevel))
+    }
+
+    /** Antes de transmitir se escucha el micrófono aparte; al transmitir lo usa la propia transmisión. */
+    private fun refreshMonitor() {
+        val want = hasPermissions() && resumed && !stream.isStreaming && !sceneActive
+        if (want && !monitor.isRunning) monitor.start()
+        else if (!want && monitor.isRunning) monitor.stop()
+    }
+
+    private fun updateMicMeter() {
+        val now = SystemClock.elapsedRealtime()
+        val p = micLevel.take()
+        val mic = stream.audioSource as? MicrophoneSource
+        val color = { id: Int -> ContextCompat.getColor(this, id) }
+
+        if (sceneActive) {
+            audioMeter.setLevel(-60f, false)
+            setMicStatus("AUDIO DEL VIDEO", color(R.color.text_dim))
+            return
+        }
+        if (mic?.isMuted() == true) {
+            shownDb = -90f
+            audioMeter.setLevel(-60f, true)
+            setMicStatus("MIC SILENCIADO", color(R.color.live))
+            return
+        }
+        if (!hasPermissions()) {
+            audioMeter.setLevel(-60f, true)
+            setMicStatus("MIC SIN PERMISO", color(R.color.live))
+            return
+        }
+        if (now - micLevel.updatedAt > 1200) {
+            shownDb = -90f
+            audioMeter.setLevel(-60f, false)
+            setMicStatus("MIC SIN LECTURA", color(R.color.warn))
+            return
+        }
+
+        if (p >= 0) {
+            val db = if (p <= 0) -90f else 20f * log10(p / 32768f)
+            shownDb = if (db > shownDb) db else maxOf(db, shownDb - 4f)
+            if (p == 0) {
+                if (zeroSince == 0L) zeroSince = now
+            } else zeroSince = 0L
+            if (p < 33) {
+                if (lowSince == 0L) lowSince = now
+            } else lowSince = 0L
+        }
+        val blocked = zeroSince != 0L && now - zeroSince > 2000
+        val tooLow = lowSince != 0L && now - lowSince > 5000
+        audioMeter.setLevel(shownDb, blocked)
+        when {
+            blocked -> setMicStatus("MIC SIN SEÑAL · ¿bloqueado?", color(R.color.live))
+            tooLow -> setMicStatus("MIC MUY BAJO", color(R.color.warn))
+            else -> {
+                val label = if (shownDb <= -89f) "MIC · silencio" else "MIC · ${shownDb.toInt()} dB"
+                setMicStatus(label, color(R.color.ok))
+            }
+        }
+    }
+
+    private fun setMicStatus(text: String, colorInt: Int) {
+        if (micStatus.text.toString() != text) micStatus.text = text
+        micStatus.setTextColor(colorInt)
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -839,6 +1002,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         sceneActive = true
         sceneName = scene.name
         physicalActive = false
+        refreshMonitor()
         try {
             stream.changeAudioSource(AudioFileSource(this, uri, false))
         } catch (e: Exception) {
@@ -868,6 +1032,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
                 (stream.audioSource as? MicrophoneSource)?.let {
                     if (micMutedBeforeScene) it.mute()
                 }
+                attachMicEffect()
             } catch (e: Exception) {
                 Log.e(TAG, "endScene audio", e)
                 toast("No se pudo volver al micrófono: ${e.message}")
@@ -875,6 +1040,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         }
         updateSceneUi()
         updateMicUi()
+        refreshMonitor()
         val lens = currentLens
         ui.postDelayed({
             if (!sceneActive && lens != null) selectLens(lens) else scheduleReapply()
@@ -972,7 +1138,15 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     override fun onStreamingStats(report: StreamingStatsReport) {
         runOnUiThread {
             bitrateAdapter?.onStreamingStats(report)
-            if (status == Status.LIVE) refreshStats(report)
+            if (status == Status.LIVE) {
+                refreshStats(report)
+                noSendSeconds = if (report.bytesOutPerSecond < 500) noSendSeconds + 1 else 0
+                val warn = noSendSeconds >= 4
+                if (warn != sendWarn) {
+                    sendWarn = warn
+                    renderBadge()
+                }
+            }
         }
     }
 

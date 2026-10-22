@@ -16,6 +16,14 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <!-- Marco que se ve mientras se transmite -->
+    <View
+        android:id="@+id/liveBorder"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_border_live"
+        android:visibility="gone" />
+
     <View
         android:layout_width="match_parent"
         android:layout_height="90dp"
@@ -27,6 +35,31 @@
         android:layout_height="190dp"
         android:layout_gravity="bottom"
         android:background="@drawable/bg_scrim_bottom" />
+
+    <!-- Medidor del micrófono -->
+    <com.carlos.fblive.AudioMeterView
+        android:id="@+id/audioMeter"
+        android:layout_width="12dp"
+        android:layout_height="150dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="14dp" />
+
+    <TextView
+        android:id="@+id/micStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="58dp"
+        android:background="@drawable/bg_pill"
+        android:paddingStart="10dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="5dp"
+        android:text="MIC"
+        android:textColor="@color/white"
+        android:textSize="11sp"
+        android:textStyle="bold" />
 
     <!-- Barra superior: estado, tiempo y datos de la transmisión -->
     <LinearLayout
