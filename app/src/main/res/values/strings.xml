@@ -1,20 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Facebook Live</string>
-    <string name="status_ready">Listo</string>
-    <string name="status_connecting">Conectando…</string>
-    <string name="status_live">EN VIVO</string>
-    <string name="status_stopped">Transmisión detenida</string>
-    <string name="status_need_permissions">Faltan permisos de cámara y micrófono</string>
-    <string name="status_bad_url">La URL debe empezar con rtmps:// o rtmp://</string>
-    <string name="status_no_key">Falta la clave de transmisión</string>
-    <string name="status_prepare_failed">No se pudo preparar el codificador de video o audio</string>
-    <string name="hint_url">URL del servidor</string>
-    <string name="hint_key">Clave de transmisión</string>
-    <string name="btn_start">Iniciar transmisión</string>
-    <string name="btn_stop">Detener transmisión</string>
-    <string name="btn_switch">Girar cámara</string>
-    <string name="btn_mute">Silenciar</string>
-    <string name="btn_unmute">Activar micrófono</string>
     <string name="default_url">rtmps://live-api-s.facebook.com:443/rtmp/</string>
 </resources>
