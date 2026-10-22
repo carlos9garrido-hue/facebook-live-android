@@ -24,7 +24,15 @@ jobs:
           gradle-version: 8.11.1
 
       - name: Compilar APK debug
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon --stacktrace > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            msg=$(grep -E "^e: |error:|What went wrong|Execution failed|Could not resolve|AAPT" -A2 build.log | head -60 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Errores de compilacion::$msg"
+          fi
+          exit $code
 
       - name: Guardar APK como artefacto
         uses: actions/upload-artifact@v4
