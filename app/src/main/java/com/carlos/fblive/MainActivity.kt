@@ -151,6 +151,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             }
         }
 
+    private val notificationLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     private val micTick = object : Runnable {
         override fun run() {
             if (resumed) updateMicMeter()
@@ -278,6 +281,12 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         ui.post(micTick)
         if (hasPermissions()) {
             prepareStream()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         } else {
             permissionLauncher.launch(permissionsToRequest())
         }
