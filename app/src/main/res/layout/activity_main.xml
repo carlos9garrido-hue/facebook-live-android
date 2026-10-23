@@ -172,6 +172,23 @@
             android:visibility="gone" />
 
         <HorizontalScrollView
+            android:id="@+id/quickScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:fillViewport="true"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/quickRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fillViewport="true"
@@ -297,7 +314,7 @@
                 android:layout_height="40dp"
                 android:layout_marginEnd="4dp"
                 android:layout_weight="1"
-                android:text="Transmisión" />
+                android:text="Directo" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/tabMulti"
@@ -306,15 +323,24 @@
                 android:layout_height="40dp"
                 android:layout_marginEnd="4dp"
                 android:layout_weight="1"
-                android:text="Multicámara" />
+                android:text="Multi" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/tabCapas"
                 style="@style/TabButton"
                 android:layout_width="0dp"
                 android:layout_height="40dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:text="Capas" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tabAudio"
+                style="@style/TabButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Audio" />
         </LinearLayout>
 
         <ScrollView

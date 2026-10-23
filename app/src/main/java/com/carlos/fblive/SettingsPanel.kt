@@ -60,7 +60,8 @@ class SettingsPanel(
                 0 -> cameraTab()
                 1 -> streamTab()
                 2 -> multiTab()
-                else -> capasTab()
+                3 -> capasTab()
+                else -> audioTab()
             }
         } catch (e: Exception) {
             note("No se pudo mostrar esta sección: ${e.message}")
@@ -372,6 +373,46 @@ class SettingsPanel(
             a.updatePip()
         }
         note("Si la segunda cámara se ve girada o de lado, cambia la rotación.")
+    }
+
+    private fun audioTab() {
+        section("Entrada de audio")
+        val all = AudioInput.list(a)
+        val active = a.activeInput
+        note("En uso: ${active?.label ?: "micrófono del teléfono"}")
+        val externals = all.filter { it.isExternal }
+        val keys = listOf(AudioInput.AUTO, AudioInput.BUILTIN) + externals.map { it.key }
+        val names = listOf("Automático", "Del teléfono") + externals.map { it.label.take(28) }
+        val selected = keys.indexOf(a.settings.audioInput).coerceAtLeast(0)
+        chips(names, selected) { i ->
+            a.settings.audioInput = keys[i]
+            a.applyAudioInput()
+            body.post { show(tab) }
+        }
+        note(
+            "Automático usa el micrófono externo cuando está conectado (USB o cable primero, Bluetooth al final) " +
+                "y el del teléfono si no hay ninguno."
+        )
+        if (externals.isEmpty()) {
+            note("No se ve ningún micrófono externo. Conéctalo por USB, cable o Bluetooth y aparecerá aquí.")
+        }
+        if (all.any { it.isBluetooth }) {
+            note("Bluetooth: el sonido sale con calidad de llamada (mono y más baja). Para transmitir conviene USB o cable.")
+        }
+
+        section("Volumen del micrófono")
+        slider(
+            "Volumen", 25f, 300f, a.settings.micGainPercent.toFloat(), 5f,
+            { "${it.roundToInt()}%" },
+            { a.setMicGain(it.roundToInt()) }
+        )
+        note("Si te oyen bajito, súbelo. Si la barra del medidor llega seguido al rojo, bájalo para que no se distorsione.")
+
+        section("Consejos")
+        note(
+            "Elige la entrada antes de empezar a transmitir. Si la cambias en vivo y no se oye, " +
+                "detén y vuelve a iniciar. El medidor de la izquierda muestra el tipo de entrada en uso (MIC, USB, CABLE o BT)."
+        )
     }
 
     private fun capasTab() {

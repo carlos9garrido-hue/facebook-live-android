@@ -26,6 +26,10 @@ class MicLevel {
     var updatedAt = 0L
         private set
 
+    /** Volumen aplicado al medir el micrófono que se escucha antes de transmitir (la transmisión ya lo trae aplicado). */
+    @Volatile
+    var gain = 1f
+
     fun feed(buffer: ByteArray, size: Int) {
         var peak = 0
         var i = 0
@@ -44,7 +48,7 @@ class MicLevel {
             val a = abs(buffer[i].toInt())
             if (a > peak) peak = a
         }
-        push(peak)
+        push(minOf(32767f, peak * gain).toInt())
     }
 
     private fun push(peak: Int) {
@@ -75,6 +79,10 @@ class MicMonitor(private val level: MicLevel) {
     private var running = false
     private var thread: Thread? = null
 
+    /** Entrada de audio que se escucha (null = la predeterminada del teléfono). */
+    @Volatile
+    var preferred: android.media.AudioDeviceInfo? = null
+
     val isRunning: Boolean get() = running
 
     @SuppressLint("MissingPermission")
@@ -92,6 +100,7 @@ class MicMonitor(private val level: MicLevel) {
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, min * 2
                 )
                 if (record.state != AudioRecord.STATE_INITIALIZED) return@Thread
+                preferred?.let { runCatching { record.setPreferredDevice(it) } }
                 record.startRecording()
                 val buffer = ShortArray(min / 2)
                 while (running) {

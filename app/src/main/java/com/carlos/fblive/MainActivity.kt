@@ -13,6 +13,9 @@ import android.graphics.Typeface
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -32,6 +35,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -128,6 +132,12 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private lateinit var micStatus: TextView
     private lateinit var liveBorder: View
     private lateinit var recBadge: TextView
+    private lateinit var quickScroll: HorizontalScrollView
+    private lateinit var quickRow: LinearLayout
+    private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    internal var activeInput: AudioInput? = null
+    private var btRouted = false
+    private var btAsked = false
     private var recordingFile: File? = null
     private lateinit var panel: LinearLayout
     private lateinit var panelController: SettingsPanel
@@ -153,6 +163,21 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     private val notificationLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private val bluetoothLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) applyAudioInput() else toast("Sin el permiso de Bluetooth no se puede usar ese micrófono")
+        }
+
+    private val deviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) {
+            addedDevices.firstOrNull { it.isSource }?.let { inputsChanged(it, true) }
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<AudioDeviceInfo>) {
+            removedDevices.firstOrNull { it.isSource }?.let { inputsChanged(it, false) }
+        }
+    }
 
     private val micTick = object : Runnable {
         override fun run() {
@@ -226,6 +251,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         overlays = OverlayManager(this, settings)
         scenes = SceneStore.load(settings.scenesJson)
         stream = RtmpStream(this, this)
+        audioManager.registerAudioDeviceCallback(deviceCallback, ui)
         stream.getGlInterface().autoHandleOrientation = !settings.vertical
         stream.getStreamClient().setReTries(10)
 
@@ -236,7 +262,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
                 findViewById<MaterialButton>(R.id.tabCamera),
                 findViewById<MaterialButton>(R.id.tabStream),
                 findViewById<MaterialButton>(R.id.tabMulti),
-                findViewById<MaterialButton>(R.id.tabCapas)
+                findViewById<MaterialButton>(R.id.tabCapas),
+                findViewById<MaterialButton>(R.id.tabAudio)
             )
         )
         setupPanelSize()
@@ -309,6 +336,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         liveAnim?.cancel()
         monitor.stop()
         LiveService.stopHandler = null
+        runCatching { audioManager.unregisterAudioDeviceCallback(deviceCallback) }
         stopRecording()
         LiveService.stop(this)
         pip.stop()
@@ -334,6 +362,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         micStatus = findViewById(R.id.micStatus)
         liveBorder = findViewById(R.id.liveBorder)
         recBadge = findViewById(R.id.recBadge)
+        quickScroll = findViewById(R.id.quickScroll)
+        quickRow = findViewById(R.id.quickRow)
         sceneBar.setOnClickListener { endScene() }
         panel = findViewById(R.id.panel)
         findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
@@ -957,6 +987,81 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     /** Conecta el medidor al micrófono de la transmisión. */
     private fun attachMicEffect() {
         (stream.audioSource as? MicrophoneSource)?.setAudioEffect(MicLevelEffect(micLevel))
+        applyAudioInput()
+    }
+
+    /** Elige la entrada de audio según la preferencia y aplica el volumen del micrófono. */
+    internal fun applyAudioInput() {
+        val chosen = AudioInput.resolve(AudioInput.list(this), settings.audioInput)
+        activeInput = chosen
+        routeBluetooth(chosen)
+        val device = chosen?.takeIf { !it.isBuiltIn }?.device
+        (stream.audioSource as? MicrophoneSource)?.let { mic ->
+            runCatching { mic.setPreferredDevice(device) }
+            mic.microphoneVolume = settings.micGainPercent / 100f
+        }
+        micLevel.gain = settings.micGainPercent / 100f
+        monitor.preferred = device
+        if (monitor.isRunning) {
+            monitor.stop()
+            refreshMonitor()
+        }
+    }
+
+    internal fun setMicGain(percent: Int) {
+        settings.micGainPercent = percent
+        micLevel.gain = percent / 100f
+        (stream.audioSource as? MicrophoneSource)?.microphoneVolume = percent / 100f
+    }
+
+    /** Para un micrófono Bluetooth hay que pedirle a Android que use ese dispositivo para la voz. */
+    @Suppress("DEPRECATION")
+    private fun routeBluetooth(input: AudioInput?) {
+        val wantBt = input?.isBluetooth == true
+        try {
+            if (wantBt) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        if (!btAsked) {
+                            btAsked = true
+                            bluetoothLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        }
+                        return
+                    }
+                    val target = audioManager.availableCommunicationDevices.firstOrNull { it.id == input!!.device.id }
+                    if (target != null) audioManager.setCommunicationDevice(target)
+                } else {
+                    audioManager.startBluetoothSco()
+                    audioManager.isBluetoothScoOn = true
+                }
+                btRouted = true
+            } else if (btRouted) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    audioManager.clearCommunicationDevice()
+                } else {
+                    audioManager.stopBluetoothSco()
+                    audioManager.isBluetoothScoOn = false
+                }
+                btRouted = false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo enrutar el audio Bluetooth", e)
+        }
+    }
+
+    /** Se conectó o desconectó un micrófono: se vuelve a elegir la entrada y se avisa. */
+    private fun inputsChanged(device: AudioDeviceInfo, added: Boolean) {
+        val input = AudioInput(device)
+        applyAudioInput()
+        panelController.refresh()
+        if (input.isExternal) {
+            toast(
+                if (added) "Micrófono conectado: ${input.label}. Se usa según Ajustes → Audio."
+                else "Micrófono desconectado: ${input.label}"
+            )
+        }
     }
 
     /** Antes de transmitir se escucha el micrófono aparte; al transmitir lo usa la propia transmisión. */
@@ -1012,7 +1117,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             blocked -> setMicStatus("MIC SIN SEÑAL · ¿bloqueado?", color(R.color.live))
             tooLow -> setMicStatus("MIC MUY BAJO", color(R.color.warn))
             else -> {
-                val label = if (shownDb <= -89f) "MIC · silencio" else "MIC · ${shownDb.toInt()} dB"
+                val src = activeInput?.shortType ?: "MIC"
+                val label = if (shownDb <= -89f) "$src · silencio" else "$src · ${shownDb.toInt()} dB"
                 setMicStatus(label, color(R.color.ok))
             }
         }
@@ -1029,6 +1135,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     /** Vuelve a dibujar los textos e imágenes sobre el video. */
     internal fun rebuildOverlays() {
+        refreshQuickRow()
         if (!stream.isOnPreview && !stream.isStreaming) return
         val (w, h) = streamSize()
         runCatching { overlays.attach(stream, w, h) }
@@ -1047,6 +1154,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         val scene = Scene(SceneStore.displayName(this, uri), uri.toString())
         if (scenes.none { it.uri == scene.uri }) scenes.add(scene)
         settings.scenesJson = SceneStore.toJson(scenes)
+        refreshQuickRow()
         panelController.refresh()
     }
 
@@ -1060,6 +1168,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         runCatching {
             contentResolver.releasePersistableUriPermission(Uri.parse(scene.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        refreshQuickRow()
     }
 
     internal fun introScene(): Scene? = scenes.firstOrNull { it.uri == settings.introUri }
@@ -1137,6 +1246,43 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private fun updateSceneUi() {
         sceneBar.visibility = if (sceneActive) View.VISIBLE else View.GONE
         sceneBar.text = "ESCENA: ${sceneName ?: "video"} · toca para volver a la cámara"
+        refreshQuickRow()
+    }
+
+    /** Botones rápidos: mostrar u ocultar cada capa y lanzar cada escena con un toque. */
+    internal fun refreshQuickRow() {
+        quickRow.removeAllViews()
+        for (item in overlays.items) {
+            val name = if (item.isText) item.text.trim().replace("\n", " ").take(14).ifEmpty { "Texto" } else "Imagen"
+            quickRow.addView(quickChip((if (item.isText) "T  " else "▣  ") + name, item.visible) {
+                item.visible = !item.visible
+                saveAndRebuildOverlays()
+                refreshQuickRow()
+                panelController.refresh()
+            })
+        }
+        for (scene in scenes) {
+            val playing = sceneActive && sceneName == scene.name
+            quickRow.addView(quickChip("▶  " + scene.name.take(14), playing) { playScene(scene) })
+        }
+        quickScroll.visibility = if (quickRow.childCount > 0) View.VISIBLE else View.GONE
+    }
+
+    private fun quickChip(text: String, on: Boolean, onClick: () -> Unit): TextView {
+        val chip = TextView(this).apply {
+            this.text = text
+            gravity = Gravity.CENTER
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setBackgroundResource(if (on) R.drawable.bg_pill_on else R.drawable.bg_pill)
+            alpha = if (on) 1f else 0.8f
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setOnClickListener { onClick() }
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        lp.setMargins(dp(4), 0, dp(4), 0)
+        chip.layoutParams = lp
+        return chip
     }
 
     // ---------------------------------------------------------------------------------------------

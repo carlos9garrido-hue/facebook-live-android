@@ -24,7 +24,9 @@ data class Lens(
     val front: Boolean,
     val focalEq: Float,
     val ratio: Float,
-    val zoom: Float?
+    val zoom: Float?,
+    /** true si es un lente macro (sensor muy pequeño que enfoca de cerca). */
+    val macro: Boolean = false
 ) {
     val key: String
         get() = when {
@@ -38,6 +40,7 @@ data class Lens(
 
     val ratioText: String
         get() {
+            if (macro) return "Macro"
             if (ratio <= 0f) return "Cam $id"
             val r = ratio
             return if (abs(r - r.roundToInt()) < 0.05f) "${r.roundToInt()}×"
@@ -46,6 +49,7 @@ data class Lens(
 
     val shortName: String
         get() = when {
+            macro -> "Cerca"
             ratio <= 0f -> "Cámara"
             ratio < 0.8f -> "Ultra"
             ratio < 1.25f -> if (front) "Frontal" else "Principal"
@@ -54,6 +58,7 @@ data class Lens(
 
     val longName: String
         get() = when {
+            macro -> "Macro (enfoque muy cercano)"
             ratio <= 0f -> "Cámara $id"
             ratio < 0.8f -> "Ultra gran angular"
             ratio < 1.25f -> if (front) "Frontal principal" else "Principal"
@@ -68,8 +73,13 @@ object CameraCatalog {
         val parentId: String?,
         val front: Boolean,
         val eq: Float,
-        val hidden: Boolean = false
-    )
+        val hidden: Boolean = false,
+        val focal: Float = 0f,
+        val pixels: Long = 0L
+    ) {
+        /** Un sensor de menos de 3 megapíxeles es casi siempre el lente macro. */
+        val macro: Boolean get() = pixels in 1L..3_000_000L
+    }
 
     /** Hasta qué número se prueban ids de cámara que Android no lista (algunos fabricantes los ocultan). */
     private const val HIDDEN_PROBE_MAX = 120
@@ -88,13 +98,13 @@ object CameraCatalog {
             val ch = characteristics(cm, id) ?: continue
             val front = isFront(ch) ?: continue
             if (!usable(ch)) continue
-            raws += Raw(id, null, front, equivalentFocal(ch))
+            raws += Raw(id, null, front, equivalentFocal(ch), false, rawFocal(ch), pixelCount(ch))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 for (pid in ch.physicalCameraIds) {
                     if (pid in ids) continue
                     val pch = characteristics(cm, pid) ?: continue
                     if (!usable(pch)) continue
-                    raws += Raw(pid, id, front, equivalentFocal(pch))
+                    raws += Raw(pid, id, front, equivalentFocal(pch), false, rawFocal(pch), pixelCount(pch))
                 }
             }
         }
@@ -107,7 +117,7 @@ object CameraCatalog {
             val ch = characteristics(cm, id) ?: continue
             val front = isFront(ch) ?: continue
             if (!usable(ch)) continue
-            raws += Raw(id, null, front, equivalentFocal(ch), hidden = true)
+            raws += Raw(id, null, front, equivalentFocal(ch), true, rawFocal(ch), pixelCount(ch))
         }
 
         val result = mutableListOf<Lens>()
@@ -117,14 +127,17 @@ object CameraCatalog {
                 .sortedWith(compareBy({ it.parentId != null }, { it.hidden }, { it.id.toIntOrNull() ?: 999 }))
             val kept = mutableListOf<Raw>()
             for (r in group) {
-                val duplicate = r.eq > 0f && kept.any { it.eq > 0f && abs(it.eq - r.eq) / it.eq < 0.08f }
+                val duplicate = r.eq > 0f && kept.any {
+                    it.eq > 0f && abs(it.eq - r.eq) / it.eq < 0.08f &&
+                        (it.focal <= 0f || r.focal <= 0f || abs(it.focal - r.focal) / it.focal < 0.15f)
+                }
                 if (!duplicate) kept += r
             }
-            val mainEq = kept.filter { it.eq > 0f }.minByOrNull { abs(it.eq - 26f) }?.eq ?: 0f
+            val mainEq = kept.filter { it.eq > 0f && !it.macro }.minByOrNull { abs(it.eq - 26f) }?.eq ?: 0f
 
             val lenses = kept.map { r ->
-                val ratio = if (r.eq > 0f && mainEq > 0f) r.eq / mainEq else 0f
-                Lens(r.id, r.parentId, front, r.eq, ratio, null)
+                val ratio = if (!r.macro && r.eq > 0f && mainEq > 0f) r.eq / mainEq else 0f
+                Lens(r.id, r.parentId, front, r.eq, ratio, null, r.macro)
             }.toMutableList()
 
             // Muchos teléfonos ofrecen el ultra gran angular solo como zoom < 1x de la cámara principal.
@@ -136,7 +149,7 @@ object CameraCatalog {
                     lenses += Lens(logical.id, null, front, logical.eq * range.lower, range.lower, range.lower)
                 }
             }
-            result += lenses.sortedBy { if (it.ratio > 0f) it.ratio else 999f }
+            result += lenses.sortedBy { if (it.macro) 998f else if (it.ratio > 0f) it.ratio else 999f }
         }
         return result
     }
@@ -183,6 +196,10 @@ object CameraCatalog {
             sb.append("• Cámara $id ($tag) · $facing")
             if (focal != null) sb.append(String.format(Locale.US, " · %.1f mm", focal))
             if (eq > 0f) sb.append(String.format(Locale.US, " (≈%.0f mm)", eq))
+            val px = ch.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+            if (px != null) sb.append(String.format(Locale.US, " · sensor %.1f MP", px.width * px.height / 1_000_000f))
+            val minFocus = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE)
+            if (minFocus != null && minFocus > 0f) sb.append(String.format(Locale.US, " · enfoca desde %.0f cm", 100f / minFocus))
             if (zoom != null) sb.append(" · $zoom")
             if (physical.isNotEmpty()) sb.append(" · lentes físicos: ${physical.joinToString(",")}")
             sb.append(if (usable(ch)) " · sirve para video" else " · no sirve para video")
@@ -233,6 +250,14 @@ object CameraCatalog {
         val sizes = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?.getOutputSizes(SurfaceTexture::class.java)
         return sizes != null && sizes.isNotEmpty()
+    }
+
+    private fun rawFocal(ch: CameraCharacteristics): Float =
+        ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+
+    private fun pixelCount(ch: CameraCharacteristics): Long {
+        val size = ch.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: return 0L
+        return size.width.toLong() * size.height.toLong()
     }
 
     /** Distancia focal equivalente en formato de 35 mm (así se comparan los lentes entre sí). */

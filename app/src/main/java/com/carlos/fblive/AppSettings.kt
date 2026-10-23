@@ -74,6 +74,16 @@ class AppSettings(context: Context) {
         get() = p.getInt("pip_rot", 0)
         set(v) = p.edit().putInt("pip_rot", v).apply()
 
+    /** "auto", "builtin" o la llave de una entrada concreta (ver AudioInput.key). */
+    var audioInput: String
+        get() = p.getString("audio_input", AudioInput.AUTO) ?: AudioInput.AUTO
+        set(v) = p.edit().putString("audio_input", v).apply()
+
+    /** Volumen del micrófono en porcentaje (100 = sin cambios). */
+    var micGainPercent: Int
+        get() = p.getInt("mic_gain", 100)
+        set(v) = p.edit().putInt("mic_gain", v).apply()
+
     /** Graba una copia del video en el teléfono mientras se transmite. */
     var recordLocal: Boolean
         get() = p.getBoolean("record_local", true)
