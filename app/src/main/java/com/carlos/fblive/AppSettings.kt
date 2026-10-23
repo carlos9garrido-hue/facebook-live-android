@@ -74,6 +74,11 @@ class AppSettings(context: Context) {
         get() = p.getInt("pip_rot", 0)
         set(v) = p.edit().putInt("pip_rot", v).apply()
 
+    /** Graba una copia del video en el teléfono mientras se transmite. */
+    var recordLocal: Boolean
+        get() = p.getBoolean("record_local", true)
+        set(v) = p.edit().putBoolean("record_local", v).apply()
+
     /** Si es true, la clave de transmisión se guarda cifrada en este teléfono. */
     var rememberKey: Boolean
         get() = p.getBoolean("remember_key", false)

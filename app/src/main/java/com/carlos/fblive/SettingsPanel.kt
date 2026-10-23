@@ -242,6 +242,30 @@ class SettingsPanel(
         )
         button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
 
+        section("Grabación en el teléfono")
+        toggle("Grabar una copia mientras transmito", a.settings.recordLocal) {
+            a.settings.recordLocal = it
+            body.post { show(tab) }
+        }
+        val gbPerHour = (a.settings.bitrateKbps + 128) * 3600f / 8f / 1024f / 1024f
+        note(
+            if (a.settings.recordLocal) {
+                String.format(
+                    Locale.US,
+                    "Al terminar, el video se copia a la galería (carpeta Movies/FacebookLive). Con tu calidad actual ocupa unos %.1f GB por hora. Si queda poco espacio, no se graba la copia.",
+                    gbPerHour
+                )
+            } else {
+                "No se guardará copia: si falla el internet, lo que no salió en vivo se pierde."
+            }
+        )
+
+        section("Segundo plano")
+        note(
+            "Al usar el botón de inicio, apagar la pantalla o tocar atrás, la transmisión sigue y una notificación permite detenerla. " +
+                "Si cierras la app desde la lista de apps recientes, la transmisión termina."
+        )
+
         section("Video")
         if (a.isLive) {
             note("Los ajustes de video se bloquean mientras estás en vivo.")

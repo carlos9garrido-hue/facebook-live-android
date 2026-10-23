@@ -52,6 +52,7 @@ import com.pedro.encoder.input.video.CameraCallbacks
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.rtmp.RtmpStream
 import com.pedro.library.util.QueueAwareBitrateAdapter
+import java.io.File
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.log10
@@ -126,6 +127,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private lateinit var audioMeter: AudioMeterView
     private lateinit var micStatus: TextView
     private lateinit var liveBorder: View
+    private lateinit var recBadge: TextView
+    private var recordingFile: File? = null
     private lateinit var panel: LinearLayout
     private lateinit var panelController: SettingsPanel
 
@@ -150,7 +153,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     private val micTick = object : Runnable {
         override fun run() {
-            updateMicMeter()
+            if (resumed) updateMicMeter()
             ui.postDelayed(this, 80)
         }
     }
@@ -214,6 +217,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         setContentView(R.layout.activity_main)
         bindViews()
 
+        LiveService.stopHandler = { runOnUiThread { if (stream.isStreaming) stopLive() } }
+        RecordingStore.exportPending(this)
         lenses = CameraCatalog.scan(this)
         overlays = OverlayManager(this, settings)
         scenes = SceneStore.load(settings.scenesJson)
@@ -257,6 +262,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             override fun handleOnBackPressed() {
                 if (panel.visibility == View.VISIBLE) {
                     closePanel()
+                } else if (stream.isStreaming) {
+                    toast("La transmisión sigue en segundo plano. Toca STOP o «Detener» en la notificación para terminar.")
+                    moveTaskToBack(true)
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -271,7 +279,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         if (hasPermissions()) {
             prepareStream()
         } else {
-            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+            permissionLauncher.launch(permissionsToRequest())
         }
     }
 
@@ -291,6 +299,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         ui.removeCallbacksAndMessages(null)
         liveAnim?.cancel()
         monitor.stop()
+        LiveService.stopHandler = null
+        stopRecording()
+        LiveService.stop(this)
         pip.stop()
         stream.release()
         super.onDestroy()
@@ -313,6 +324,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         audioMeter = findViewById(R.id.audioMeter)
         micStatus = findViewById(R.id.micStatus)
         liveBorder = findViewById(R.id.liveBorder)
+        recBadge = findViewById(R.id.recBadge)
         sceneBar.setOnClickListener { endScene() }
         panel = findViewById(R.id.panel)
         findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
@@ -366,6 +378,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     // Preparación de la transmisión y de la vista previa
     // ---------------------------------------------------------------------------------------------
 
+    /** Cámara y micrófono son obligatorios; el permiso de notificaciones solo hace visible el aviso de segundo plano. */
+    private fun permissionsToRequest(): Array<String> {
+        val list = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.POST_NOTIFICATIONS
+        return list.toTypedArray()
+    }
+
     private fun hasPermissions(): Boolean =
         listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -411,13 +430,22 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     private fun startPreviewIfReady() {
         if (!prepared || !surfaceReady || stream.isOnPreview) return
+        val resuming = stream.isStreaming || stream.isRecording
         try {
             stream.startPreview(surfaceView)
-            onPreviewStarted()
+            if (resuming) onPreviewResumed() else onPreviewStarted()
         } catch (e: Exception) {
             Log.e(TAG, "startPreview", e)
             toast("No se pudo iniciar la cámara: ${e.message}")
         }
+    }
+
+    /** La pantalla volvió con la transmisión en marcha: solo se reconecta la vista previa, sin tocar la cámara. */
+    private fun onPreviewResumed() {
+        refreshLensRow()
+        updateMicUi()
+        updateSceneUi()
+        updateRecUi()
     }
 
     private fun onPreviewStarted() {
@@ -755,9 +783,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         setStatus(Status.CONNECTING)
         liveStartMs = SystemClock.elapsedRealtime()
         monitor.stop() // libera el micrófono para que lo use la transmisión
+        val recording = settings.recordLocal && startRecording()
+        LiveService.start(this, recording, System.currentTimeMillis())
         try {
             stream.startStream("$base/$key")
         } catch (e: Exception) {
+            stopRecording()
+            LiveService.stop(this)
             setStatus(Status.ERROR)
             toast("No se pudo iniciar: ${e.message}")
             refreshMonitor()
@@ -769,7 +801,9 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     private fun stopLive() {
         pendingIntro = false
+        stopRecording()
         if (stream.isStreaming) stream.stopStream()
+        LiveService.stop(this)
         ui.removeCallbacks(timerTick)
         timerText.text = "00:00:00"
         setStatus(Status.IDLE)
@@ -863,6 +897,48 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         val muted = (stream.audioSource as? MicrophoneSource)?.isMuted() ?: false
         btnMic.setImageResource(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
         btnMic.setBackgroundResource(if (muted) R.drawable.bg_round_alert else R.drawable.bg_round)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Grabación local
+    // ---------------------------------------------------------------------------------------------
+
+    /** Empieza a grabar una copia en el teléfono. Devuelve false si no se pudo (la transmisión sigue igual). */
+    private fun startRecording(): Boolean {
+        if (stream.isRecording) return true
+        if (RecordingStore.freeBytes(this) < RecordingStore.MIN_FREE_BYTES) {
+            toast("Queda muy poco espacio: no se grabará la copia en el teléfono")
+            return false
+        }
+        val file = RecordingStore.newFile(this)
+        return try {
+            RecordingStore.current = file
+            stream.startRecord(file.absolutePath) { }
+            recordingFile = file
+            updateRecUi()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "startRecord", e)
+            RecordingStore.current = null
+            toast("No se pudo grabar la copia: ${e.message}")
+            false
+        }
+    }
+
+    /** Termina la grabación y copia el video a la galería. */
+    private fun stopRecording() {
+        val file = recordingFile
+        if (stream.isRecording) runCatching { stream.stopRecord() }
+        recordingFile = null
+        RecordingStore.current = null
+        updateRecUi()
+        if (file != null) {
+            RecordingStore.export(this, file) { message -> toast(message) }
+        }
+    }
+
+    private fun updateRecUi() {
+        recBadge.visibility = if (stream.isRecording) View.VISIBLE else View.GONE
     }
 
     // ---------------------------------------------------------------------------------------------
