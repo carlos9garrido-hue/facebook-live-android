@@ -496,7 +496,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     private fun unlockFocus() {
         ui.removeCallbacks(focusRelease)
         setAeLock(false)
-        focusView.clearFocus()
+        focusView.hideFocus()
         releaseFocus()
     }
 

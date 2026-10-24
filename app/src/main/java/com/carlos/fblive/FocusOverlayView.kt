@@ -45,7 +45,7 @@ class FocusOverlayView(context: Context) : View(context) {
         postInvalidateOnAnimation()
     }
 
-    fun clearFocus() {
+    fun hideFocus() {
         focusShown = false
         locked = false
         postInvalidateOnAnimation()
