@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">LenteVivo</string>
+    <string name="app_name">DEVOCast</string>
     <string name="default_url">rtmps://live-api-s.facebook.com:443/rtmp/</string>
 </resources>
