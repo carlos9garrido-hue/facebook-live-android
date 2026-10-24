@@ -97,6 +97,10 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     internal lateinit var overlays: OverlayManager
     internal var scenes: MutableList<Scene> = mutableListOf()
     internal lateinit var cards: CardManager
+    private lateinit var focusView: FocusOverlayView
+    internal lateinit var chat: ChatPanel
+    private var afLocked = false
+    private val focusRelease = Runnable { releaseFocus() }
     private var micMutedBeforeCard = false
     private lateinit var health: DeviceHealth
     private lateinit var deviceBadge: TextView
@@ -251,6 +255,14 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         bindViews()
+        (surfaceView.parent as android.view.ViewGroup).let { parent ->
+            focusView = FocusOverlayView(this)
+            parent.addView(
+                focusView, parent.indexOfChild(gridView) + 1,
+                android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+            chat = ChatPanel(this, parent)
+        }
 
         LiveService.stopHandler = { runOnUiThread { if (stream.isStreaming) stopLive() } }
         RecordingStore.exportPending(this)
@@ -363,6 +375,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         LiveService.stop(this)
         pip.stop()
         cards.release()
+        chat.destroy()
         health.stop()
         stream.release()
         super.onDestroy()
@@ -417,17 +430,35 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
                 if (!stream.isOnPreview || sceneActive) return false
                 val range = cam.getZoomRange()
                 setZoomLevel((camState.zoom * detector.scaleFactor).coerceIn(range.lower, range.upper))
+                focusView.showZoom(camState.zoom)
                 return true
             }
         })
         val tap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onSingleTapUp(e: MotionEvent): Boolean {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (panel.visibility == View.VISIBLE) {
                     closePanel()
                 } else if (stream.isOnPreview && !sceneActive) {
-                    camState.manualFocus = false
-                    runCatching { cam.tapToFocus(surfaceView, e) }
+                    if (afLocked) unlockFocus() else focusAt(e, false)
                 }
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (panel.visibility != View.VISIBLE && stream.isOnPreview && !sceneActive) {
+                    surfaceView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    focusAt(e, true)
+                }
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (panel.visibility == View.VISIBLE || !stream.isOnPreview || sceneActive) return true
+                val range = runCatching { cam.getZoomRange() }.getOrNull() ?: return true
+                val target = if (camState.zoom > 1.5f) 1f else 2f
+                setZoomLevel(target.coerceIn(range.lower, range.upper))
+                focusView.showZoom(camState.zoom)
                 return true
             }
         })
@@ -436,6 +467,37 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             if (!scale.isInProgress) tap.onTouchEvent(event)
             true
         }
+    }
+
+    /**
+     * Enfoca donde tocas. Un toque enfoca y, a los 4 segundos, vuelve el enfoque automático continuo
+     * (así no se queda borroso si te mueves). Mantener presionado bloquea enfoque y luz hasta que toques de nuevo.
+     */
+    private fun focusAt(e: MotionEvent, lock: Boolean) {
+        val c = camOrNull ?: return
+        camState.manualFocus = false
+        ui.removeCallbacks(focusRelease)
+        val ok = runCatching { c.tapToFocus(surfaceView, e) }.getOrDefault(false)
+        focusView.showFocus(e.x, e.y, lock, ok)
+        if (lock) {
+            afLocked = true
+            setAeLock(true)
+        } else {
+            ui.postDelayed(focusRelease, 4000)
+        }
+    }
+
+    private fun releaseFocus() {
+        afLocked = false
+        if (camState.manualFocus || sceneActive) return
+        runCatching { camOrNull?.enableAutoFocus() }
+    }
+
+    private fun unlockFocus() {
+        ui.removeCallbacks(focusRelease)
+        setAeLock(false)
+        focusView.clearFocus()
+        releaseFocus()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1313,6 +1375,10 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     /** Botones rápidos: mostrar u ocultar cada capa y lanzar cada escena con un toque. */
     internal fun refreshQuickRow() {
         quickRow.removeAllViews()
+        quickRow.addView(quickChip("💬  Chat", chat.visible) {
+            chat.toggle(settings.chatUrl)
+            refreshQuickRow()
+        })
         for (card in cards.items) {
             val icon = when (card.kind) {
                 CardManager.KIND_COUNTDOWN -> "⏱  "

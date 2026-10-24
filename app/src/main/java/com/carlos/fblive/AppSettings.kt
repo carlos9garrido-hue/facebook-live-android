@@ -153,7 +153,13 @@ class AppSettings(context: Context) {
         get() = p.getFloat("last_upload", 0f)
         set(v) = p.edit().putFloat("last_upload", v).apply()
 
+    /** Página que se abre en la ventana de chat (por defecto, Live Producer). */
+    var chatUrl: String
+        get() = p.getString("chat_url", DEFAULT_CHAT_URL) ?: DEFAULT_CHAT_URL
+        set(v) = p.edit().putString("chat_url", v).apply()
+
     companion object {
+        const val DEFAULT_CHAT_URL = "https://www.facebook.com/live/producer"
         const val DEFAULT_URL = "rtmps://live-api-s.facebook.com:443/rtmp/"
     }
 }

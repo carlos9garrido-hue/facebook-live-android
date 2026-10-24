@@ -245,6 +245,13 @@ class SettingsPanel(
                 "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
         )
         button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
+        label("Chat en pantalla")
+        note(
+            "El botón «Chat» sobre el video abre una ventana con esta página para leer los comentarios sin salir de la app. " +
+                "Solo la ves tú, no sale en la transmisión. Inicia sesión en Facebook la primera vez. " +
+                "Si la página de Producer te queda muy grande, pega aquí el enlace de tu transmisión."
+        )
+        field("https://…", a.settings.chatUrl, false) { a.settings.chatUrl = it }
 
         section("Grabación en el teléfono")
         toggle("Grabar una copia mientras transmito", a.settings.recordLocal) {
