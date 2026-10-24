@@ -35,6 +35,9 @@ class SettingsPanel(
 
     private var tab = 0
     private var diagVisible = false
+    private var speedTest: UploadTest? = null
+    private var speedView: TextView? = null
+    private var speedText = ""
 
     /** Dónde se agregan las piezas de interfaz (el cuerpo del panel o una tarjeta). */
     private var target: LinearLayout = body
@@ -267,6 +270,8 @@ class SettingsPanel(
                 "Si cierras la app desde la lista de apps recientes, la transmisión termina."
         )
 
+        qualitySection()
+
         section("Video")
         if (a.isLive) {
             note("Los ajustes de video se bloquean mientras estás en vivo.")
@@ -274,11 +279,13 @@ class SettingsPanel(
             label("Resolución")
             chips(listOf("720p", "1080p"), if (a.settings.height == 1080) 1 else 0) { i ->
                 a.settings.height = if (i == 1) 1080 else 720
+                markManual()
                 a.reconfigure()
             }
             label("Cuadros por segundo")
             chips(listOf("30 fps", "60 fps"), if (a.settings.fps == 60) 1 else 0) { i ->
                 a.settings.fps = if (i == 1) 60 else 30
+                markManual()
                 a.reconfigure()
             }
             slider(
@@ -287,6 +294,7 @@ class SettingsPanel(
                 {},
                 { v ->
                     a.settings.bitrateKbps = v.roundToInt()
+                    markManual()
                     a.reconfigure()
                 }
             )
@@ -416,6 +424,8 @@ class SettingsPanel(
     }
 
     private fun capasTab() {
+        screensSection()
+        templatesSection()
         section("Textos e imágenes")
         note("Se dibujan encima del video de la transmisión: tu nombre, un logo, un mensaje o un aviso.")
         buttonRow(
@@ -453,6 +463,217 @@ class SettingsPanel(
             }
             note("La intro empieza apenas Facebook acepta la conexión.")
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Calidad y red
+    // ---------------------------------------------------------------------------------------------
+
+    private fun markManual() {
+        if (a.settings.qualityProfile != QualityProfiles.MANUAL) {
+            a.settings.qualityProfile = QualityProfiles.MANUAL
+            body.post { if (tab == 1) show(tab) }
+        }
+    }
+
+    private fun qualitySection() {
+        section("Calidad y red")
+        note("Red ahora: ${NetworkInfoHelper.name(a)}")
+        val keys = listOf(QualityProfiles.MANUAL, QualityProfiles.AUTO, "wifi", "mobile", "saver")
+        val names = listOf("Mi ajuste", "Automático", "Wi-Fi", "Datos móviles", "Ahorro")
+        val current = keys.indexOf(a.settings.qualityProfile).coerceAtLeast(0)
+        if (a.isLive) {
+            note("Perfil: ${names[current]}. No se cambia mientras estás en vivo.")
+        } else {
+            chips(names, current) { i ->
+                a.applyQualityProfile(keys[i])
+            }
+            val key = keys[current]
+            note(
+                when (key) {
+                    QualityProfiles.MANUAL -> "Usas los valores de la sección Video, tal como los dejaste."
+                    QualityProfiles.AUTO -> {
+                        val p = QualityProfiles.forNetwork(a)
+                        "Al tocar LIVE se elige según tu red. Ahora: ${p.label} (${p.description})."
+                    }
+                    else -> QualityProfiles.byKey(key)?.let { "${it.label}: ${it.description}." } ?: ""
+                }
+            )
+        }
+
+        label("Prueba de velocidad de subida")
+        note(
+            "Mide cuánto puedes subir ahora mismo y te dice el bitrate que conviene. Usa unos 5 a 40 MB de datos, " +
+                "así que en datos móviles gasta de tu plan. Hazla antes de transmitir, en el lugar donde vas a estar."
+        )
+        val result = TextView(a).apply {
+            text = speedText
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setPadding(0, a.dp(6), 0, a.dp(2))
+            visibility = if (speedText.isEmpty()) View.GONE else View.VISIBLE
+        }
+        speedView = result
+        val running = speedTest?.running == true
+        if (a.isLive) {
+            note("La prueba no se hace durante la transmisión.")
+        } else {
+            button(if (running) "Cancelar prueba" else "Probar velocidad") {
+                if (speedTest?.running == true) speedTest?.cancel() else startSpeedTest()
+            }
+        }
+        target.addView(result)
+
+        val mbps = a.settings.lastUploadMbps
+        if (mbps > 0f && !a.isLive && !running) {
+            val rec = UploadAdvisor.recommend(mbps)
+            val label = if (rec.height == 1080) "1080p" else "720p"
+            button("Usar la recomendación: $label · ${rec.bitrateKbps / 1000f} Mbps") {
+                a.settings.qualityProfile = QualityProfiles.MANUAL
+                a.applyQuality(rec.height, rec.fps, rec.bitrateKbps)
+                a.toast("Calidad ajustada: $label a ${rec.fps} fps, ${rec.bitrateKbps / 1000f} Mbps")
+                show(tab)
+            }
+        }
+    }
+
+    private fun startSpeedTest() {
+        speedText = "Midiendo…"
+        show(tab)
+        val test = UploadTest(
+            onProgress = { mbps, secs ->
+                a.runOnUiThread {
+                    speedText = String.format(Locale.US, "Midiendo… %.1f Mbps (%.0f s)", mbps, secs)
+                    speedView?.apply { text = speedText; visibility = View.VISIBLE }
+                }
+            },
+            onDone = { r ->
+                a.runOnUiThread {
+                    if (r.error != null) {
+                        speedText = r.error
+                    } else {
+                        a.settings.lastUploadMbps = r.mbps
+                        val rec = UploadAdvisor.recommend(r.mbps)
+                        speedText = String.format(Locale.US, "Subida: %.1f Mbps.\n%s", r.mbps, rec.text)
+                    }
+                    if (a.isPanelOpen() && tab == 1) show(tab)
+                }
+            }
+        )
+        speedTest = test
+        test.start()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Pantallas listas y plantillas
+    // ---------------------------------------------------------------------------------------------
+
+    private fun screensSection() {
+        section("Pantallas listas")
+        note(
+            "Pantallas que tapan el video con un toque: «Ya regreso», pausa o cuenta regresiva. También salen como botones sobre el video. " +
+                "Mientras una está puesta se puede silenciar tu micrófono."
+        )
+        buttonRow(
+            "+ Ya regreso" to { a.cards.addTemplate(CardManager.KIND_BRB); a.refreshQuickRow(); show(tab) },
+            "+ Pausa" to { a.cards.addTemplate(CardManager.KIND_PAUSE); a.refreshQuickRow(); show(tab) },
+            "+ Cuenta" to { a.cards.addTemplate(CardManager.KIND_COUNTDOWN); a.refreshQuickRow(); show(tab) }
+        )
+        for (card in a.cards.items.toList()) screenCard(card)
+    }
+
+    private fun screenCard(card: ScreenCard) {
+        val box = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_field)
+            setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(12))
+        }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = a.dp(10)
+        body.addView(box, lp)
+        target = box
+
+        toggle("Mostrar ahora en la transmisión", a.cards.isActive(card)) { a.toggleCard(card) }
+        label("Título")
+        textField("Título", card.title) {
+            card.title = it
+            a.cards.save()
+            a.cards.redraw()
+            a.refreshQuickRow()
+        }
+        label(if (card.isCountdown) "Mensaje debajo" else "Mensaje")
+        textField("Mensaje", card.subtitle) {
+            card.subtitle = it
+            a.cards.save()
+            a.cards.redraw()
+        }
+        if (card.isCountdown) {
+            slider(
+                "Duración", 1f, 60f, card.minutes.toFloat(), 1f,
+                { "${it.roundToInt()} min" },
+                {
+                    card.minutes = it.roundToInt()
+                    a.cards.save()
+                }
+            )
+            note("La cuenta empieza al mostrar la pantalla y, al llegar a cero, se quita sola.")
+        }
+        label("Color de fondo")
+        val colors = listOf(
+            0xFF1E3A8A.toInt(), 0xFF7C3AED.toInt(), 0xFF374151.toInt(), 0xFFB91C1C.toInt(), 0xFF047857.toInt(), 0xFF000000.toInt()
+        )
+        val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+        val swatches = mutableListOf<View>()
+        fun swatch(color: Int, selected: Boolean) = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(a.dp(if (selected) 3 else 1), if (selected) accent else 0x66FFFFFF)
+        }
+        colors.forEachIndexed { index, color ->
+            val v = View(a).apply {
+                background = swatch(color, color == card.color)
+                setOnClickListener {
+                    card.color = color
+                    swatches.forEachIndexed { j, other -> other.background = swatch(colors[j], j == index) }
+                    a.cards.save()
+                    a.cards.redraw()
+                }
+            }
+            swatches += v
+            row.addView(v, LinearLayout.LayoutParams(a.dp(34), a.dp(34)).apply {
+                setMargins(0, a.dp(4), a.dp(10), a.dp(4))
+            })
+        }
+        box.addView(row)
+        toggle("Silenciar mi micrófono mientras se muestra", card.muteMic) {
+            card.muteMic = it
+            a.cards.save()
+        }
+        button("Quitar") {
+            a.cards.remove(card)
+            a.refreshQuickRow()
+            show(tab)
+        }
+        target = body
+    }
+
+    private fun templatesSection() {
+        section("Plantillas de rótulos")
+        note("Escribe tu nombre y tus redes una vez; con un toque se crean rótulos listos sobre el video, que luego puedes mover o cambiar abajo en «Textos e imágenes».")
+        label("Tu nombre")
+        textField("Ej. Carlos Garrido", a.settings.profileName) { a.settings.profileName = it.trim() }
+        label("Tus redes")
+        textField("Ej. @carlos · facebook.com/carlos", a.settings.profileSocial) { a.settings.profileSocial = it.trim() }
+        fun add(kind: String) {
+            a.overlays.addTemplate(kind, a.settings.profileName, a.settings.profileSocial)
+            a.saveAndRebuildOverlays()
+            show(tab)
+        }
+        buttonRow(
+            "+ Nombre y redes" to { add(OverlayManager.TEMPLATE_NAME) },
+            "+ Solo redes" to { add(OverlayManager.TEMPLATE_SOCIAL) }
+        )
+        button("+ «Sígueme en…»") { add(OverlayManager.TEMPLATE_FOLLOW) }
     }
 
     private fun overlayCard(item: OverlayItem) {

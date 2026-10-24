@@ -143,6 +143,20 @@ class OverlayManager(private val context: Context, private val settings: AppSett
         return item
     }
 
+    /** Rótulos listos: "nombre" (nombre y redes abajo a la izquierda), "redes" (solo redes arriba a la derecha), "sigueme". */
+    fun addTemplate(kind: String, name: String, social: String): OverlayItem {
+        val n = name.trim().ifEmpty { "Tu nombre" }
+        val r = social.trim().ifEmpty { "@tu_usuario" }
+        val item = when (kind) {
+            TEMPLATE_SOCIAL -> OverlayItem(UUID.randomUUID().toString(), OverlayItem.KIND_TEXT, text = r, sizePercent = 22, position = 2, bold = false)
+            TEMPLATE_FOLLOW -> OverlayItem(UUID.randomUUID().toString(), OverlayItem.KIND_TEXT, text = "Sígueme en $r", sizePercent = 40, position = 7)
+            else -> OverlayItem(UUID.randomUUID().toString(), OverlayItem.KIND_TEXT, text = "$n\n$r", sizePercent = 32, position = 6)
+        }
+        items += item
+        save()
+        return item
+    }
+
     /** Copia la imagen elegida a la carpeta de la app para no depender del permiso del selector. */
     fun addImage(uri: Uri): OverlayItem? {
         val bitmap = decodeScaled(uri) ?: return null
@@ -197,6 +211,12 @@ class OverlayManager(private val context: Context, private val settings: AppSett
             stream.getGlInterface().addFilter(render)
             renders += render
         }
+    }
+
+    companion object {
+        const val TEMPLATE_NAME = "name"
+        const val TEMPLATE_SOCIAL = "social"
+        const val TEMPLATE_FOLLOW = "follow"
     }
 
     fun detach(stream: StreamBase) {

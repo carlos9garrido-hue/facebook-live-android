@@ -126,6 +126,20 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/deviceBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_pill"
+            android:gravity="center"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:textColor="@color/warn"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
         <View
             android:layout_width="0dp"
             android:layout_height="1dp"

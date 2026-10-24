@@ -103,6 +103,7 @@ class LiveService : Service() {
     companion object {
         private const val TAG = "LiveService"
         private const val CHANNEL_ID = "live"
+        private const val ALERT_CHANNEL_ID = "alerts"
         private const val NOTIFICATION_ID = 7
         private const val MAX_LIVE_MS = 8 * 60 * 60 * 1000L
         private const val ACTION_STOP = "com.carlos.fblive.STOP"
@@ -118,6 +119,32 @@ class LiveService : Service() {
                 .putExtra(EXTRA_RECORDING, recording)
                 .putExtra(EXTRA_STARTED_AT, startedAt)
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** Notificación con sonido para avisar de batería baja o calor aunque la app esté en segundo plano. */
+        fun alert(context: Context, title: String, text: String) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.createNotificationChannel(
+                    NotificationChannel(ALERT_CHANNEL_ID, "Avisos del teléfono", NotificationManager.IMPORTANCE_HIGH)
+                )
+            }
+            val open = PendingIntent.getActivity(
+                context, 2,
+                Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val n = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_live)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(open)
+                .build()
+            runCatching { manager.notify(title.hashCode(), n) }
         }
 
         fun stop(context: Context) {

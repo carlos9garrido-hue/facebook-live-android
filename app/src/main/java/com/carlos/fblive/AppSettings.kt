@@ -129,6 +129,30 @@ class AppSettings(context: Context) {
         get() = p.getBoolean("intro_on", false)
         set(v) = p.edit().putBoolean("intro_on", v).apply()
 
+    /** Pantallas listas (Ya regreso, pausa, cuenta regresiva), guardadas como JSON. */
+    var cardsJson: String
+        get() = p.getString("cards", "") ?: ""
+        set(v) = p.edit().putString("cards", v).apply()
+
+    /** Datos para los rótulos con plantilla. */
+    var profileName: String
+        get() = p.getString("profile_name", "") ?: ""
+        set(v) = p.edit().putString("profile_name", v).apply()
+
+    var profileSocial: String
+        get() = p.getString("profile_social", "") ?: ""
+        set(v) = p.edit().putString("profile_social", v).apply()
+
+    /** "manual" (lo que tú elijas), "auto" (según la red) o la llave de un perfil (wifi, mobile, saver). */
+    var qualityProfile: String
+        get() = p.getString("quality_profile", QualityProfiles.MANUAL) ?: QualityProfiles.MANUAL
+        set(v) = p.edit().putString("quality_profile", v).apply()
+
+    /** Último resultado de la prueba de subida, en Mbps (0 = sin medir). */
+    var lastUploadMbps: Float
+        get() = p.getFloat("last_upload", 0f)
+        set(v) = p.edit().putFloat("last_upload", v).apply()
+
     companion object {
         const val DEFAULT_URL = "rtmps://live-api-s.facebook.com:443/rtmp/"
     }

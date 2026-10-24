@@ -96,6 +96,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     internal val camOrNull: Camera2Source? get() = stream.videoSource as? Camera2Source
     internal lateinit var overlays: OverlayManager
     internal var scenes: MutableList<Scene> = mutableListOf()
+    internal lateinit var cards: CardManager
+    private var micMutedBeforeCard = false
+    private lateinit var health: DeviceHealth
+    private lateinit var deviceBadge: TextView
+    private var lastHealth: DeviceHealth.State? = null
+    private var batteryAlerted = Severity.OK
+    private var heatAlerted = Severity.OK
 
     /** true mientras se transmite un video pregrabado en lugar de la cámara. */
     internal var sceneActive = false
@@ -250,6 +257,11 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         lenses = CameraCatalog.scan(this)
         overlays = OverlayManager(this, settings)
         scenes = SceneStore.load(settings.scenesJson)
+        cards = CardManager(settings).also { c ->
+            c.onChanged = { refreshQuickRow() }
+            c.onMute = { mute -> setMicMutedByCard(mute) }
+        }
+        health = DeviceHealth(this) { state -> runOnUiThread { onHealthChanged(state) } }
         stream = RtmpStream(this, this)
         audioManager.registerAudioDeviceCallback(deviceCallback, ui)
         stream.getGlInterface().autoHandleOrientation = !settings.vertical
@@ -319,6 +331,16 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        health.start()
+    }
+
+    override fun onStop() {
+        if (!stream.isStreaming) health.stop()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         resumed = true
@@ -340,6 +362,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         stopRecording()
         LiveService.stop(this)
         pip.stop()
+        cards.release()
+        health.stop()
         stream.release()
         super.onDestroy()
     }
@@ -362,6 +386,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         micStatus = findViewById(R.id.micStatus)
         liveBorder = findViewById(R.id.liveBorder)
         recBadge = findViewById(R.id.recBadge)
+        deviceBadge = findViewById(R.id.deviceBadge)
         quickScroll = findViewById(R.id.quickScroll)
         quickRow = findViewById(R.id.quickRow)
         sceneBar.setOnClickListener { endScene() }
@@ -511,6 +536,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             return
         }
         if (sceneActive) endScene()
+        cards.hide()
         pip.stop()
         val wasPreview = stream.isOnPreview
         if (wasPreview) stream.stopPreview()
@@ -818,6 +844,15 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             return
         }
         closePanel()
+        if (settings.qualityProfile == QualityProfiles.AUTO) {
+            val p = QualityProfiles.forNetwork(this)
+            if (settings.height != p.height || settings.fps != p.fps || settings.bitrateKbps != p.bitrateKbps) {
+                applyQuality(p.height, p.fps, p.bitrateKbps)
+                toast("Perfil automático: ${p.label} (${p.description})")
+                ui.postDelayed({ onLiveClicked() }, 900)
+                return
+            }
+        }
         pendingIntro = settings.introEnabled && introScene() != null
         setStatus(Status.CONNECTING)
         liveStartMs = SystemClock.elapsedRealtime()
@@ -840,6 +875,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
 
     private fun stopLive() {
         pendingIntro = false
+        cards.hide()
         stopRecording()
         if (stream.isStreaming) stream.stopStream()
         LiveService.stop(this)
@@ -1140,6 +1176,31 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         val (w, h) = streamSize()
         runCatching { overlays.attach(stream, w, h) }
             .onFailure { Log.e(TAG, "overlays", it) }
+        runCatching { cards.reattach(stream, w, h) }
+            .onFailure { Log.e(TAG, "cards", it) }
+    }
+
+    /** Muestra u oculta una pantalla lista (Ya regreso, pausa, cuenta regresiva). */
+    internal fun toggleCard(card: ScreenCard) {
+        if (!cards.isActive(card) && !stream.isOnPreview && !stream.isStreaming) {
+            toast("La cámara aún no está lista")
+            return
+        }
+        val (w, h) = streamSize()
+        cards.toggle(card, stream, w, h)
+    }
+
+    private fun setMicMutedByCard(mute: Boolean) {
+        val mic = stream.audioSource as? MicrophoneSource
+        if (mic != null) {
+            if (mute) {
+                micMutedBeforeCard = mic.isMuted()
+                mic.mute()
+            } else if (!micMutedBeforeCard) {
+                mic.unMute()
+            }
+        }
+        updateMicUi()
     }
 
     internal fun saveAndRebuildOverlays() {
@@ -1252,6 +1313,14 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     /** Botones rápidos: mostrar u ocultar cada capa y lanzar cada escena con un toque. */
     internal fun refreshQuickRow() {
         quickRow.removeAllViews()
+        for (card in cards.items) {
+            val icon = when (card.kind) {
+                CardManager.KIND_COUNTDOWN -> "⏱  "
+                CardManager.KIND_PAUSE -> "⏸  "
+                else -> "◼  "
+            }
+            quickRow.addView(quickChip(icon + card.title.trim().take(14).ifEmpty { "Pantalla" }, cards.isActive(card)) { toggleCard(card) })
+        }
         for (item in overlays.items) {
             val name = if (item.isText) item.text.trim().replace("\n", " ").take(14).ifEmpty { "Texto" } else "Imagen"
             quickRow.addView(quickChip((if (item.isText) "T  " else "▣  ") + name, item.visible) {
@@ -1283,6 +1352,81 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         lp.setMargins(dp(4), 0, dp(4), 0)
         chip.layoutParams = lp
         return chip
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Batería y temperatura
+    // ---------------------------------------------------------------------------------------------
+
+    private fun onHealthChanged(state: DeviceHealth.State) {
+        lastHealth = state
+        val text = StringBuilder()
+        var worst = Severity.OK
+        if (state.battery != Severity.OK) {
+            text.append("🔋 ${state.level}%")
+            worst = state.battery
+        }
+        if (state.heat != Severity.OK) {
+            if (text.isNotEmpty()) text.append("  ")
+            text.append(if (state.heat == Severity.ALERT) "🌡 MUY CALIENTE" else "🌡 CALIENTE")
+            if (state.heat.ordinal > worst.ordinal) worst = state.heat
+        }
+        if (text.isEmpty()) {
+            deviceBadge.visibility = View.GONE
+        } else {
+            deviceBadge.visibility = View.VISIBLE
+            deviceBadge.text = text.toString()
+            deviceBadge.setTextColor(
+                ContextCompat.getColor(this, if (worst == Severity.ALERT) R.color.live else R.color.warn)
+            )
+        }
+        // Aviso solo cuando empeora, para no repetirlo en cada cambio de 1 %.
+        if (state.battery.ordinal > batteryAlerted.ordinal) {
+            val msg = if (state.battery == Severity.ALERT) {
+                "Batería muy baja (${state.level} %). Conecta el cargador o la transmisión se cortará."
+            } else {
+                "Batería baja (${state.level} %). Conviene conectar el cargador."
+            }
+            toast(msg)
+            if (stream.isStreaming) LiveService.alert(this, "Batería baja", msg)
+        }
+        batteryAlerted = state.battery
+        if (state.heat.ordinal > heatAlerted.ordinal) {
+            val msg = if (state.heat == Severity.ALERT) {
+                "El teléfono está muy caliente. Baja a 720p, quítale la funda o ponlo en la sombra para que no se apague la cámara."
+            } else {
+                "El teléfono se está calentando. Si sigue subiendo, baja la calidad a 720p."
+            }
+            toast(msg)
+            if (stream.isStreaming) LiveService.alert(this, "Teléfono caliente", msg)
+        }
+        heatAlerted = state.heat
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Calidad y red
+    // ---------------------------------------------------------------------------------------------
+
+    /** Aplica un perfil de calidad (o el que toca según la red si está en automático). */
+    internal fun applyQualityProfile(key: String) {
+        if (stream.isStreaming) {
+            toast("Detén la transmisión para cambiar esto")
+            return
+        }
+        settings.qualityProfile = key
+        val profile = if (key == QualityProfiles.AUTO) QualityProfiles.forNetwork(this) else QualityProfiles.byKey(key)
+        if (profile != null) applyQuality(profile.height, profile.fps, profile.bitrateKbps)
+        panelController.refresh()
+    }
+
+    /** Pone resolución, fps y bitrate de golpe y reinicia la vista previa una sola vez. */
+    internal fun applyQuality(height: Int, fps: Int, bitrateKbps: Int) {
+        if (stream.isStreaming) return
+        val changed = settings.height != height || settings.fps != fps || settings.bitrateKbps != bitrateKbps
+        settings.height = height
+        settings.fps = fps
+        settings.bitrateKbps = bitrateKbps
+        if (changed) reconfigure() else refreshStats(null)
     }
 
     // ---------------------------------------------------------------------------------------------
