@@ -153,6 +153,29 @@ class AppSettings(context: Context) {
         get() = p.getFloat("last_upload", 0f)
         set(v) = p.edit().putFloat("last_upload", v).apply()
 
+    /** true = transmitir con la cuenta de Facebook (sin copiar la clave); false = URL y clave manuales. */
+    var useFacebookLogin: Boolean
+        get() = p.getBoolean("use_fb_login", true)
+        set(v) = p.edit().putBoolean("use_fb_login", v).apply()
+
+    /** Dónde se transmite: vacío = tu perfil, o el id de una Página que administras. */
+    var fbTargetId: String
+        get() = p.getString("fb_target_id", "") ?: ""
+        set(v) = p.edit().putString("fb_target_id", v).apply()
+
+    var fbTitle: String
+        get() = p.getString("fb_title", "") ?: ""
+        set(v) = p.edit().putString("fb_title", v).apply()
+
+    var fbDescription: String
+        get() = p.getString("fb_description", "") ?: ""
+        set(v) = p.edit().putString("fb_description", v).apply()
+
+    /** Quién ve la transmisión de tu perfil: EVERYONE, ALL_FRIENDS o SELF. */
+    var fbPrivacy: String
+        get() = p.getString("fb_privacy", "EVERYONE") ?: "EVERYONE"
+        set(v) = p.edit().putString("fb_privacy", v).apply()
+
     /** Página que se abre en la ventana de chat (por defecto, Live Producer). */
     var chatUrl: String
         get() = p.getString("chat_url", DEFAULT_CHAT_URL) ?: DEFAULT_CHAT_URL

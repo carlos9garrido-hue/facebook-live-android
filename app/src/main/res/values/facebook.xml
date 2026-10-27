@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Reemplaza estos tres valores con los de tu app en https://developers.facebook.com
+        (Configuración de la app → Básica). Mientras digan TU_..., la app muestra un aviso
+        en lugar de intentar iniciar sesión.
+    -->
+    <string name="facebook_app_id" translatable="false">TU_APP_ID</string>
+    <string name="facebook_client_token" translatable="false">TU_CLIENT_TOKEN</string>
+    <string name="fb_login_protocol_scheme" translatable="false">fbTU_APP_ID</string>
+</resources>

@@ -89,6 +89,12 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     internal var lenses: List<Lens> = emptyList()
     internal var currentLens: Lens? = null
     internal var streamKey: String = ""
+    internal lateinit var fbAuth: FbAuth
+    internal lateinit var fb: FbLive
+    private lateinit var fbBadge: TextView
+
+    /** true mientras Facebook está creando la transmisión (antes de empezar a enviar video). */
+    private var creatingLive = false
     internal var pipWanted = false
     internal val pip by lazy { PipCamera(this) { message -> toast(message); onPipStopped() } }
 
@@ -253,6 +259,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
         super.onCreate(savedInstanceState)
+        fbAuth = FbAuth(this)
+        fb = FbLive(this)
         setContentView(R.layout.activity_main)
         bindViews()
         (surfaceView.parent as android.view.ViewGroup).let { parent ->
@@ -293,6 +301,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         setupPanelSize()
         setupButtons()
         setupGestures()
+        if (fbAuth.configured && fbAuth.loggedIn) fb.loadAccount { panelController.refresh() }
         gridView.visibility = if (settings.grid) View.VISIBLE else View.GONE
 
         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
@@ -374,6 +383,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         stopRecording()
         LiveService.stop(this)
         pip.stop()
+        fb.end()
+        fb.release()
         cards.release()
         chat.destroy()
         health.stop()
@@ -400,6 +411,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         liveBorder = findViewById(R.id.liveBorder)
         recBadge = findViewById(R.id.recBadge)
         deviceBadge = findViewById(R.id.deviceBadge)
+        fbBadge = findViewById(R.id.fbBadge)
         quickScroll = findViewById(R.id.quickScroll)
         quickRow = findViewById(R.id.quickRow)
         sceneBar.setOnClickListener { endScene() }
@@ -885,6 +897,14 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     // ---------------------------------------------------------------------------------------------
 
     private fun onLiveClicked() {
+        if (creatingLive) {
+            // Segundo toque mientras Facebook prepara la transmisión: se cancela.
+            creatingLive = false
+            fb.cancelCreate()
+            setStatus(Status.IDLE)
+            toast("Cancelado")
+            return
+        }
         if (stream.isStreaming) {
             stopLive()
             return
@@ -893,17 +913,39 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             toast("La cámara aún no está lista")
             return
         }
-        val base = settings.url.trim().trimEnd('/')
-        if (!base.startsWith("rtmps://") && !base.startsWith("rtmp://")) {
-            toast("La URL del servidor debe empezar con rtmps://")
-            openPanel(1)
-            return
-        }
-        val key = streamKey.trim()
-        if (key.isEmpty()) {
-            toast("Escribe la clave de transmisión")
-            openPanel(1)
-            return
+        val useFacebook = settings.useFacebookLogin
+        var base = ""
+        var key = ""
+        if (useFacebook) {
+            if (!fbAuth.configured) {
+                toast("Falta configurar la app de Facebook (ver el README)")
+                openPanel(1)
+                return
+            }
+            if (!fbAuth.loggedIn) {
+                toast("Inicia sesión con Facebook para transmitir")
+                openPanel(1)
+                return
+            }
+            val needed = if (settings.fbTargetId.isEmpty()) FbAuth.PERM_PUBLISH_VIDEO else FbAuth.PERM_PAGES_POST
+            if (!fbAuth.hasPermission(needed)) {
+                toast("Falta el permiso «$needed». Cierra sesión y vuelve a entrar aceptando todo.")
+                openPanel(1)
+                return
+            }
+        } else {
+            base = settings.url.trim().trimEnd('/')
+            if (!base.startsWith("rtmps://") && !base.startsWith("rtmp://")) {
+                toast("La URL del servidor debe empezar con rtmps://")
+                openPanel(1)
+                return
+            }
+            key = streamKey.trim()
+            if (key.isEmpty()) {
+                toast("Escribe la clave de transmisión")
+                openPanel(1)
+                return
+            }
         }
         closePanel()
         if (settings.qualityProfile == QualityProfiles.AUTO) {
@@ -917,15 +959,42 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         }
         pendingIntro = settings.introEnabled && introScene() != null
         setStatus(Status.CONNECTING)
+        if (!useFacebook) {
+            beginStreaming("$base/$key")
+            return
+        }
+        // Con la cuenta de Facebook: primero se crea la transmisión y Facebook entrega la dirección de envío.
+        creatingLive = true
+        fb.create { result ->
+            creatingLive = false
+            result.onSuccess { info ->
+                if (!info.permalink.isNullOrEmpty() && chat.visible) chat.show(info.permalink)
+                beginStreaming(info.streamUrl)
+            }.onFailure { e ->
+                val error = e as? FbException
+                setStatus(Status.ERROR)
+                toast(error?.friendly() ?: "No se pudo crear la transmisión: ${e.message}")
+                if (error?.sessionExpired == true) {
+                    fbAuth.logout()
+                    fb.clearAccount()
+                    panelController.refresh()
+                }
+            }
+        }
+    }
+
+    /** Empieza a enviar el video a la dirección completa (servidor + clave). */
+    private fun beginStreaming(fullUrl: String) {
         liveStartMs = SystemClock.elapsedRealtime()
         monitor.stop() // libera el micrófono para que lo use la transmisión
         val recording = settings.recordLocal && startRecording()
         LiveService.start(this, recording, System.currentTimeMillis())
         try {
-            stream.startStream("$base/$key")
+            stream.startStream(fullUrl)
         } catch (e: Exception) {
             stopRecording()
             LiveService.stop(this)
+            fb.end()
             setStatus(Status.ERROR)
             toast("No se pudo iniciar: ${e.message}")
             refreshMonitor()
@@ -940,6 +1009,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         cards.hide()
         stopRecording()
         if (stream.isStreaming) stream.stopStream()
+        fb.end()
+        fbBadge.visibility = View.GONE
         LiveService.stop(this)
         ui.removeCallbacks(timerTick)
         timerText.text = "00:00:00"
@@ -1376,7 +1447,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     internal fun refreshQuickRow() {
         quickRow.removeAllViews()
         quickRow.addView(quickChip("💬  Chat", chat.visible) {
-            chat.toggle(settings.chatUrl)
+            // En vivo con la cuenta de Facebook, el chat es el de esta transmisión.
+            chat.toggle(fb.permalink ?: settings.chatUrl)
             refreshQuickRow()
         })
         for (card in cards.items) {
@@ -1499,6 +1571,50 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     // Verificación de la transmisión
     // ---------------------------------------------------------------------------------------------
 
+    /** Inicia sesión con Facebook (se abre la ventana de Facebook para aceptar los permisos). */
+    internal fun fbLogin() {
+        if (!fbAuth.configured) {
+            toast("Falta configurar la app de Facebook (ver el README)")
+            return
+        }
+        fbAuth.login { ok, message ->
+            if (message != null) toast(message)
+            if (ok) fb.loadAccount { panelController.refresh() }
+            panelController.refresh()
+        }
+    }
+
+    internal fun fbLogout() {
+        fbAuth.logout()
+        fb.clearAccount()
+        panelController.refresh()
+    }
+
+    /** Lo que Facebook reporta de la transmisión: estado real y espectadores. */
+    internal fun onFbStatus(s: FbLiveStatus, sinceStartMs: Long) {
+        if (!stream.isStreaming) return
+        when {
+            s.isLive -> {
+                val viewers = s.viewers?.let { "  ·  $it 👁" }.orEmpty()
+                fbBadge.text = "FACEBOOK ✓ EN VIVO$viewers"
+                fbBadge.setTextColor(Color.WHITE)
+                fbBadge.setBackgroundResource(R.drawable.bg_pill_live)
+            }
+            s.isEnded && sinceStartMs > 15000 -> {
+                stopLive()
+                setStatus(Status.ERROR)
+                toast("Facebook terminó la transmisión")
+                return
+            }
+            else -> {
+                fbBadge.text = "FACEBOOK: esperando video…"
+                fbBadge.setTextColor(ContextCompat.getColor(this, R.color.warn))
+                fbBadge.setBackgroundResource(R.drawable.bg_pill)
+            }
+        }
+        fbBadge.visibility = View.VISIBLE
+    }
+
     internal fun openLiveProducer() {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.facebook.com/live/producer")))
@@ -1541,6 +1657,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     override fun onConnectionSuccess() {
         runOnUiThread {
             setStatus(Status.LIVE)
+            fb.startPolling()
             if (pendingIntro) {
                 pendingIntro = false
                 introScene()?.let { playScene(it) }
@@ -1571,7 +1688,10 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         runOnUiThread {
             stopLive()
             setStatus(Status.ERROR)
-            toast("Error de autenticación: revisa la clave de transmisión")
+            toast(
+                if (settings.useFacebookLogin) "Facebook rechazó la conexión de la transmisión"
+                else "Error de autenticación: revisa la clave de transmisión"
+            )
         }
     }
 

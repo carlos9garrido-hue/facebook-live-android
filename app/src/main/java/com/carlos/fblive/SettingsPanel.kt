@@ -208,7 +208,76 @@ class SettingsPanel(
     }
 
     private fun streamTab() {
-        section("Facebook Live")
+        facebookSection()
+        if (!a.settings.useFacebookLogin) manualKeySection()
+        streamRest()
+    }
+
+    private fun facebookSection() {
+        section("Cuenta de Facebook")
+        toggle("Transmitir con mi cuenta de Facebook", a.settings.useFacebookLogin) { on ->
+            a.settings.useFacebookLogin = on
+            body.post { show(tab) }
+        }
+        if (!a.settings.useFacebookLogin) {
+            note("Modo manual: pegas la URL del servidor y la clave que te da Live Producer en cada transmisión.")
+            return
+        }
+        if (!a.fbAuth.configured) {
+            note(
+                "Falta conectar la app con Facebook. En GitHub edita el archivo app/src/main/res/values/facebook.xml " +
+                    "y pon el ID de tu app y su token de cliente (los pasos están en el README)."
+            )
+            return
+        }
+        if (!a.fbAuth.loggedIn) {
+            note("Inicia sesión y acepta los permisos. Después, al tocar LIVE la app crea la transmisión sola: no hay que copiar ninguna clave.")
+            button("Iniciar sesión con Facebook") { a.fbLogin() }
+            return
+        }
+        val name = a.fb.userName
+        note(if (name.isNotEmpty()) "Sesión iniciada como $name." else "Sesión iniciada.")
+        if (a.isLive) {
+            note("El destino y los datos se cambian cuando termina la transmisión.")
+            return
+        }
+
+        label("Dónde transmitir")
+        val pages = a.fb.pages
+        if (pages == null) {
+            note("Buscando tus Páginas…")
+        } else {
+            val ids = listOf("") + pages.map { it.id }
+            val names = listOf("Mi perfil") + pages.map { it.name.take(24) }
+            val selected = ids.indexOf(a.settings.fbTargetId).coerceAtLeast(0)
+            chips(names, selected) { i ->
+                a.settings.fbTargetId = ids[i]
+                body.post { show(tab) }
+            }
+            if (pages.isEmpty()) note("No aparece ninguna Página que administres, así que solo se puede transmitir a tu perfil.")
+        }
+
+        label("Título")
+        textField("Título de la transmisión", a.settings.fbTitle) { a.settings.fbTitle = it }
+        label("Descripción")
+        textField("Descripción (opcional)", a.settings.fbDescription) { a.settings.fbDescription = it }
+
+        if (a.settings.fbTargetId.isEmpty()) {
+            label("Quién lo ve")
+            val keys = listOf("EVERYONE", "ALL_FRIENDS", "SELF")
+            chips(listOf("Público", "Amigos", "Solo yo"), keys.indexOf(a.settings.fbPrivacy).coerceAtLeast(0)) { i ->
+                a.settings.fbPrivacy = keys[i]
+            }
+            note("«Solo yo» sirve para hacer pruebas sin que nadie lo vea.")
+        } else {
+            note("En una Página la transmisión es pública.")
+        }
+        note("Facebook exige que la cuenta tenga al menos 60 días y que el perfil o la Página tenga 100 seguidores o más.")
+        button("Cerrar sesión de Facebook") { a.fbLogout() }
+    }
+
+    private fun manualKeySection() {
+        section("Clave manual")
         note("En Facebook abre Live Producer, elige «Software de transmisión» y copia la URL del servidor y la clave.")
         label("URL del servidor")
         field("rtmps://…", a.settings.url, false) { a.settings.url = it }
@@ -239,17 +308,31 @@ class SettingsPanel(
             }
         )
 
+    }
+
+    private fun streamRest() {
         section("Comprobar que sí transmite")
         note(
-            "Cuando la insignia diga EN VIVO, Facebook aceptó la conexión, y los MB enviados de arriba deben ir subiendo. " +
-                "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
+            if (a.settings.useFacebookLogin) {
+                "Cuando la insignia diga EN VIVO, Facebook aceptó la conexión. Unos segundos después aparece «FACEBOOK ✓ EN VIVO» " +
+                    "con los espectadores: eso lo reporta Facebook mismo, así que confirma que de verdad se está viendo."
+            } else {
+                "Cuando la insignia diga EN VIVO, Facebook aceptó la conexión, y los MB enviados de arriba deben ir subiendo. " +
+                    "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
+            }
         )
         button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
         label("Chat en pantalla")
         note(
-            "El botón «Chat» sobre el video abre una ventana con esta página para leer los comentarios sin salir de la app. " +
-                "Solo la ves tú, no sale en la transmisión. Inicia sesión en Facebook la primera vez. " +
-                "Si la página de Producer te queda muy grande, pega aquí el enlace de tu transmisión."
+            if (a.settings.useFacebookLogin) {
+                "El botón «Chat» sobre el video abre una ventana con tu transmisión de Facebook para leer los comentarios sin salir de la app. " +
+                    "Solo la ves tú, no sale en la transmisión. La primera vez inicia sesión en Facebook dentro de esa ventana. " +
+                    "Fuera de una transmisión se abre la página de abajo."
+            } else {
+                "El botón «Chat» sobre el video abre una ventana con esta página para leer los comentarios sin salir de la app. " +
+                    "Solo la ves tú, no sale en la transmisión. Inicia sesión en Facebook la primera vez. " +
+                    "Si la página de Producer te queda muy grande, pega aquí el enlace de tu transmisión."
+            }
         )
         field("https://…", a.settings.chatUrl, false) { a.settings.chatUrl = it }
 
