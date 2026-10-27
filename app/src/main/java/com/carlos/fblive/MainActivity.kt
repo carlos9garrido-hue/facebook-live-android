@@ -935,14 +935,16 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             }
         } else {
             base = settings.url.trim().trimEnd('/')
-            if (!base.startsWith("rtmps://") && !base.startsWith("rtmp://")) {
-                toast("La URL del servidor debe empezar con rtmps://")
+            key = streamKey.trim()
+            // Si pegaron la dirección completa (servidor + clave) en el campo de la clave, se usa tal cual.
+            val fullAddress = key.startsWith("rtmp://") || key.startsWith("rtmps://")
+            if (!fullAddress && !base.startsWith("rtmps://") && !base.startsWith("rtmp://")) {
+                toast("Falta la URL del servidor (empieza con rtmps://)")
                 openPanel(1)
                 return
             }
-            key = streamKey.trim()
             if (key.isEmpty()) {
-                toast("Escribe la clave de transmisión")
+                toast("Falta la clave de transmisión: cópiala de Live Producer y pégala en Ajustes → Directo")
                 openPanel(1)
                 return
             }
@@ -960,7 +962,8 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         pendingIntro = settings.introEnabled && introScene() != null
         setStatus(Status.CONNECTING)
         if (!useFacebook) {
-            beginStreaming("$base/$key")
+            val fullAddress = key.startsWith("rtmp://") || key.startsWith("rtmps://")
+            beginStreaming(if (fullAddress) key else "$base/$key")
             return
         }
         // Con la cuenta de Facebook: primero se crea la transmisión y Facebook entrega la dirección de envío.
@@ -1570,6 +1573,32 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     // ---------------------------------------------------------------------------------------------
     // Verificación de la transmisión
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Toma lo que se copió de Live Producer y lo acomoda: si es la dirección completa la separa en
+     * servidor y clave; si empieza con rtmps:// solo es el servidor; si no, es la clave.
+     * Devuelve un mensaje corto para mostrar.
+     */
+    internal fun applyPastedText(raw: String): String {
+        val text = raw.trim()
+        if (text.isEmpty()) return "No hay nada copiado todavía"
+        val marker = "/rtmp/"
+        val isUrl = text.startsWith("rtmps://") || text.startsWith("rtmp://")
+        when {
+            isUrl && text.contains(marker) && text.substringAfter(marker).isNotEmpty() -> {
+                settings.url = text.substringBefore(marker) + marker
+                streamKey = text.substringAfter(marker).trim()
+            }
+            isUrl -> settings.url = text
+            else -> streamKey = text.lineSequence().first().trim()
+        }
+        if (settings.rememberKey && streamKey.isNotEmpty()) settings.saveStreamKey(streamKey)
+        return when {
+            isUrl && streamKey.isNotEmpty() && text.contains(marker) -> "Listo: se pegaron la URL y la clave"
+            isUrl -> "Listo: se pegó la URL del servidor"
+            else -> "Listo: se pegó la clave"
+        }
+    }
 
     /** Inicia sesión con Facebook (se abre la ventana de Facebook para aceptar los permisos). */
     internal fun fbLogin() {

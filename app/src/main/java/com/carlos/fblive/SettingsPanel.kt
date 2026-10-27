@@ -208,21 +208,31 @@ class SettingsPanel(
     }
 
     private fun streamTab() {
-        facebookSection()
-        if (!a.settings.useFacebookLogin) manualKeySection()
+        if (a.settings.useFacebookLogin) facebookSection() else manualKeySection()
         streamRest()
+        if (!a.settings.useFacebookLogin) experimentalSwitch()
+    }
+
+    /** Al final de la pestaña: activar el inicio de sesión de Facebook (experimental). */
+    private fun experimentalSwitch() {
+        section("Avanzado")
+        note(
+            "Inicio de sesión con Facebook (experimental): crea la transmisión sin copiar la clave, pero Facebook solo lo permite " +
+                "si tu app de desarrollador tiene el permiso publish_video, y hoy no siempre se puede obtener. Si no estás seguro, déjalo apagado."
+        )
+        toggle("Transmitir con mi cuenta de Facebook", false) { on ->
+            a.settings.useFacebookLogin = on
+            body.post { show(tab) }
+        }
     }
 
     private fun facebookSection() {
-        section("Cuenta de Facebook")
+        section("Cuenta de Facebook (experimental)")
         toggle("Transmitir con mi cuenta de Facebook", a.settings.useFacebookLogin) { on ->
             a.settings.useFacebookLogin = on
             body.post { show(tab) }
         }
-        if (!a.settings.useFacebookLogin) {
-            note("Modo manual: pegas la URL del servidor y la clave que te da Live Producer en cada transmisión.")
-            return
-        }
+        note("Si el inicio de sesión da error, apaga este interruptor y usa la clave manual.")
         if (!a.fbAuth.configured) {
             note(
                 "Falta conectar la app con Facebook. En GitHub edita el archivo app/src/main/res/values/facebook.xml " +
@@ -277,8 +287,25 @@ class SettingsPanel(
     }
 
     private fun manualKeySection() {
-        section("Clave manual")
-        note("En Facebook abre Live Producer, elige «Software de transmisión» y copia la URL del servidor y la clave.")
+        section("Cómo transmitir a Facebook")
+        note(
+            "1. Abre Live Producer y elige «Software de transmisión».\n" +
+                "2. Copia la clave (o la URL y la clave).\n" +
+                "3. Vuelve aquí y toca «Pegar lo copiado».\n" +
+                "4. Toca LIVE sobre el video."
+        )
+        button("1) Abrir Live Producer en Facebook") { a.openLiveProducer() }
+        button("3) Pegar lo copiado") {
+            val clipboard = a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)?.coerceToText(a)?.toString().orEmpty()
+            a.toast(a.applyPastedText(text))
+            show(tab)
+        }
+        note(
+            "Tip: en Live Producer elige «Usar una clave de transmisión persistente». Es una sola clave que no cambia, " +
+                "y la app la recuerda, así que no hay que copiarla otra vez."
+        )
         label("URL del servidor")
         field("rtmps://…", a.settings.url, false) { a.settings.url = it }
         label("Clave de transmisión")
@@ -321,7 +348,7 @@ class SettingsPanel(
                     "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
             }
         )
-        button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
+        if (a.settings.useFacebookLogin) button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
         label("Chat en pantalla")
         note(
             if (a.settings.useFacebookLogin) {

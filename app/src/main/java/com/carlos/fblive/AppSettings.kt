@@ -2,7 +2,7 @@ package com.carlos.fblive
 
 import android.content.Context
 
-/** Ajustes que se guardan en el teléfono. La clave de transmisión NUNCA se guarda. */
+/** Ajustes que se guardan en el teléfono. La clave de transmisión solo se guarda cifrada y si lo permites. */
 class AppSettings(context: Context) {
 
     private val p = context.getSharedPreferences("fblive", Context.MODE_PRIVATE)
@@ -91,7 +91,7 @@ class AppSettings(context: Context) {
 
     /** Si es true, la clave de transmisión se guarda cifrada en este teléfono. */
     var rememberKey: Boolean
-        get() = p.getBoolean("remember_key", false)
+        get() = p.getBoolean("remember_key", true)
         set(v) = p.edit().putBoolean("remember_key", v).apply()
 
     /** Guarda la clave cifrada. Devuelve false si el teléfono no pudo cifrarla. */
@@ -153,9 +153,9 @@ class AppSettings(context: Context) {
         get() = p.getFloat("last_upload", 0f)
         set(v) = p.edit().putFloat("last_upload", v).apply()
 
-    /** true = transmitir con la cuenta de Facebook (sin copiar la clave); false = URL y clave manuales. */
+    /** true = transmitir con la cuenta de Facebook (experimental); false = URL y clave manuales (lo normal). */
     var useFacebookLogin: Boolean
-        get() = p.getBoolean("use_fb_login", true)
+        get() = p.getBoolean("use_fb_login", false)
         set(v) = p.edit().putBoolean("use_fb_login", v).apply()
 
     /** Dónde se transmite: vacío = tu perfil, o el id de una Página que administras. */
