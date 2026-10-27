@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-        Reemplaza estos tres valores con los de tu app en https://developers.facebook.com
-        (Configuración de la app → Básica). Mientras digan TU_..., la app muestra un aviso
-        en lugar de intentar iniciar sesión.
+        Datos de tu app de Facebook (https://developers.facebook.com → Configuración de la app).
+        Si cambias de app, reemplaza estos tres valores.
     -->
-    <string name="facebook_app_id" translatable="false">TU_APP_ID</string>
-    <string name="facebook_client_token" translatable="false">TU_CLIENT_TOKEN</string>
-    <string name="fb_login_protocol_scheme" translatable="false">fbTU_APP_ID</string>
+    <string name="facebook_app_id" translatable="false">1785775682681854</string>
+    <string name="facebook_client_token" translatable="false">a34eb5ae3c491f1c3c8e62a737fd7721</string>
+    <string name="fb_login_protocol_scheme" translatable="false">fb1785775682681854</string>
 </resources>
