@@ -292,7 +292,8 @@ class SettingsPanel(
             "1. Abre Live Producer y elige «Software de transmisión».\n" +
                 "2. Copia la clave (o la URL y la clave).\n" +
                 "3. Vuelve aquí y toca «Pegar lo copiado».\n" +
-                "4. Toca LIVE sobre el video."
+                "4. Toca LIVE sobre el video.\n" +
+                "5. En Live Producer toca «Transmitir en vivo» para que la gente lo vea."
         )
         button("1) Abrir Live Producer en Facebook") { a.openLiveProducer() }
         button("3) Pegar lo copiado") {
@@ -312,6 +313,19 @@ class SettingsPanel(
         field("Pega aquí tu clave", a.streamKey, true) {
             a.streamKey = it
             if (a.settings.rememberKey) a.settings.saveStreamKey(it)
+        }
+        val key = a.streamKey.trim()
+        if (key.isEmpty()) {
+            note("⚠ Todavía no hay clave. Cópiala en Live Producer y toca «Pegar lo copiado».")
+        } else {
+            val tail = if (key.length > 4) "•••• ${key.takeLast(4)}" else "••••"
+            note("✓ Clave lista ($tail). Ya puedes tocar LIVE.")
+            button("Borrar la clave") {
+                a.streamKey = ""
+                a.settings.clearStreamKey()
+                a.toast("Clave borrada")
+                show(tab)
+            }
         }
         toggle("Recordar la clave en este teléfono", a.settings.rememberKey) { on ->
             if (on) {
@@ -345,10 +359,11 @@ class SettingsPanel(
                     "con los espectadores: eso lo reporta Facebook mismo, así que confirma que de verdad se está viendo."
             } else {
                 "Cuando la insignia diga EN VIVO, Facebook aceptó la conexión, y los MB enviados de arriba deben ir subiendo. " +
-                    "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer; desde ahí lo publicas y ves los comentarios."
+                    "En unos 10 a 20 segundos verás tu video en la vista previa de Live Producer. Ojo: ahí todavía no lo ve nadie; " +
+                    "toca «Transmitir en vivo» en Live Producer para publicarlo."
             }
         )
-        if (a.settings.useFacebookLogin) button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
+        button("Abrir Live Producer en Facebook") { a.openLiveProducer() }
         label("Chat en pantalla")
         note(
             if (a.settings.useFacebookLogin) {

@@ -11,8 +11,8 @@ android {
         applicationId = "com.carlos.fblive"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
     }
 
     // Llave de firma fija: así el "key hash" que se registra en Facebook no cambia en cada compilación
